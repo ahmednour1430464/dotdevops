@@ -27,6 +27,8 @@ const defaultAgentPort = "7700"
 type RunOptions struct {
 	DryRun      bool
 	Parallelism int // 0 = unlimited
+	Resume      bool
+	Reconcile   bool
 }
 
 // Run executes a plan file end-to-end using the execution graph.
@@ -97,9 +99,15 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 				}
 
 				cascadeSkip := false
+				isBlocked := false
 				for _, depID := range node.DependsOn {
 					st := nodeStates[depID]
-					if st == "failed" || st == "skipped" {
+					if st == "failed" || st == "blocked" {
+						cascadeSkip = true
+						isBlocked = true
+						break
+					}
+					if st == "skipped" {
 						cascadeSkip = true
 						break
 					}
@@ -117,7 +125,12 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 
 				if cascadeSkip {
 					mu.Lock()
-					nodeStates[id] = "skipped"
+					if isBlocked {
+						nodeStates[id] = "blocked"
+					} else {
+						nodeStates[id] = "skipped"
+					}
+					recStatus := nodeStates[id]
 					mu.Unlock()
 					
 					for _, tID := range node.Targets {
@@ -127,8 +140,13 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 								inputsWithAddr[k] = v
 							}
 							inputsWithAddr["__target_addr"] = target.Address
-							_ = store.Record(node.ID, target.ID, planHash, "skipped", "skipped", proto.ChangeSet{}, inputsWithAddr)
-							fmt.Printf("[%s → %s] skipped (dependency or condition)\n", node.ID, target.ID)
+							nodeHash := node.Hash(target.ID)
+							_ = store.Record(node.ID, target.ID, planHash, nodeHash, "skipped_cs", recStatus, proto.ChangeSet{}, inputsWithAddr)
+							if isBlocked {
+								fmt.Printf("[%s → %s] blocked (dependency failed)\n", node.ID, target.ID)
+							} else {
+								fmt.Printf("[%s → %s] skipped (dependency or condition)\n", node.ID, target.ID)
+							}
 						}
 					}
 
@@ -159,7 +177,52 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 						default:
 						}
 
-						changed, err := runNode(ctx, node, t, planHash, store, opts)
+						nodeHash := node.Hash(t.ID)
+						latest, err := store.LatestExecution(node.ID, t.ID)
+						
+						isResumable := false
+						isReconciled := false
+						
+						if err == nil && latest != nil {
+							if opts.Resume && latest.PlanHash == planHash {
+								if latest.Status == "applied" {
+									isResumable = true
+								}
+							}
+							if opts.Reconcile {
+								if latest.Status == "applied" && latest.NodeHash == nodeHash {
+									isReconciled = true
+								}
+							}
+						}
+
+						if isResumable {
+							fmt.Printf("[%s → %s] skipped (resumed)\n", node.ID, t.ID)
+							targetMu.Lock()
+							if latest != nil && totalChanges(latest.ChangeSet) > 0 {
+								anyChanged = true
+							}
+							if node.Type == "process.exec" {
+								anyChanged = true
+							}
+							targetMu.Unlock()
+							return
+						}
+
+						if isReconciled {
+							fmt.Printf("[%s → %s] ✓ up to date (reconciled)\n", node.ID, t.ID)
+							targetMu.Lock()
+							if latest != nil && totalChanges(latest.ChangeSet) > 0 {
+								anyChanged = true
+							}
+							if node.Type == "process.exec" {
+								anyChanged = true
+							}
+							targetMu.Unlock()
+							return
+						}
+
+						changed, err := runNode(ctx, node, t, planHash, nodeHash, store, opts)
 						
 						targetMu.Lock()
 						if err != nil {
@@ -237,17 +300,17 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 }
 
 // runNode handles one (node × target) pair. Return (changed, error).
-func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) (bool, error) {
+func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
 	addr := addressWithPort(target.Address)
 	if node.Type == "file.sync" {
-		return runFileSync(ctx, addr, node, target, planHash, store, opts)
+		return runFileSync(ctx, addr, node, target, planHash, nodeHash, store, opts)
 	} else if node.Type == "process.exec" {
-		return runProcessExec(ctx, addr, node, target, planHash, store, opts)
+		return runProcessExec(ctx, addr, node, target, planHash, nodeHash, store, opts)
 	}
 	return false, fmt.Errorf("unsupported primitive type: %s", node.Type)
 }
 
-func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) (bool, error) {
+func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -360,7 +423,7 @@ func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.T
 		dbStatus = "applied"
 	}
 	
-	if err := store.Record(node.ID, target.ID, planHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
+	if err := store.Record(node.ID, target.ID, planHash, nodeHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
@@ -378,7 +441,7 @@ func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.T
 	return true, nil
 }
 
-func runProcessExec(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) (bool, error) {
+func runProcessExec(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
 	if opts.DryRun {
 		cmdArr, _ := node.Inputs["cmd"].([]any)
 		fmt.Printf("[%s → %s] dry-run: would execute %v\n", node.ID, target.ID, cmdArr)
@@ -438,7 +501,7 @@ func runProcessExec(ctx context.Context, addr string, node plan.Node, target pla
 		dbStatus = "applied"
 	}
 	
-	if err := store.Record(node.ID, target.ID, planHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
+	if err := store.Record(node.ID, target.ID, planHash, nodeHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
@@ -582,7 +645,7 @@ func RollbackLast(store *state.Store) error {
 			fmt.Fprintf(os.Stderr, "WARN: rollback failed for node %s on %s: %v\n", ex.NodeID, ex.Target, err)
 		} else {
 			fmt.Printf("[%s → %s] successfully rolled back\n", ex.NodeID, ex.Target)
-			_ = store.Record(ex.NodeID, ex.Target, ex.PlanHash, "rollback_cs", "rolled_back", ex.ChangeSet, ex.Inputs)
+			_ = store.Record(ex.NodeID, ex.Target, ex.PlanHash, ex.NodeHash, "rollback_cs", "rolled_back", ex.ChangeSet, ex.Inputs)
 		}
 	}
 	return nil

@@ -20,9 +20,10 @@ CREATE TABLE IF NOT EXISTS executions (
 	node_id        TEXT    NOT NULL,
 	target         TEXT    NOT NULL,
 	plan_hash      TEXT    NOT NULL DEFAULT '',
+	node_hash      TEXT    NOT NULL DEFAULT '',
 	content_hash   TEXT    NOT NULL,
 	timestamp      INTEGER NOT NULL,
-	status         TEXT    NOT NULL,  -- "pending" | "skipped" | "applied" | "failed" | "rolled_back"
+	status         TEXT    NOT NULL,  -- "pending" | "skipped" | "applied" | "failed" | "rolled_back" | "blocked"
 	changeset_json TEXT    NOT NULL,
 	inputs_json    TEXT    NOT NULL DEFAULT '{}'
 );
@@ -52,8 +53,9 @@ func Open() (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	// Add plan_hash column for existing databases (fails silently if it already exists)
+	// Add node_hash column for existing databases (fails silently if it already exists)
 	_, _ = db.Exec(`ALTER TABLE executions ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE executions ADD COLUMN node_hash TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE executions ADD COLUMN inputs_json TEXT NOT NULL DEFAULT '{}'`)
 	return &Store{db: db}, nil
 }
@@ -64,7 +66,7 @@ func (s *Store) Close() error {
 }
 
 // Record appends one execution record (append-only).
-func (s *Store) Record(nodeID, target, planHash, contentHash, status string, cs proto.ChangeSet, inputs map[string]any) error {
+func (s *Store) Record(nodeID, target, planHash, nodeHash, contentHash, status string, cs proto.ChangeSet, inputs map[string]any) error {
 	csJSON, err := json.Marshal(cs)
 	if err != nil {
 		return err
@@ -74,9 +76,9 @@ func (s *Store) Record(nodeID, target, planHash, contentHash, status string, cs 
 		return err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO executions (node_id, target, plan_hash, content_hash, timestamp, status, changeset_json, inputs_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		nodeID, target, planHash, contentHash, time.Now().Unix(), status, string(csJSON), string(inputsJSON),
+		`INSERT INTO executions (node_id, target, plan_hash, node_hash, content_hash, timestamp, status, changeset_json, inputs_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		nodeID, target, planHash, nodeHash, contentHash, time.Now().Unix(), status, string(csJSON), string(inputsJSON),
 	)
 	return err
 }
@@ -87,6 +89,7 @@ type Execution struct {
 	NodeID      string
 	Target      string
 	PlanHash    string
+	NodeHash    string
 	ContentHash string
 	Timestamp   time.Time
 	Status      string
@@ -98,7 +101,7 @@ type Execution struct {
 // used to determine if the current state matches what was last applied.
 func (s *Store) LastSuccessful(nodeID, target string) (*Execution, error) {
 	row := s.db.QueryRow(
-		`SELECT id, plan_hash, content_hash, timestamp, changeset_json, inputs_json
+		`SELECT id, plan_hash, node_hash, content_hash, timestamp, changeset_json, inputs_json
 		 FROM executions
 		 WHERE node_id = ? AND target = ? AND status = 'applied'
 		 ORDER BY id DESC LIMIT 1`,
@@ -109,7 +112,38 @@ func (s *Store) LastSuccessful(nodeID, target string) (*Execution, error) {
 	var csJSON, inputsJSON string
 	e.NodeID = nodeID
 	e.Target = target
-	if err := row.Scan(&e.ID, &e.PlanHash, &e.ContentHash, &ts, &csJSON, &inputsJSON); err != nil {
+	if err := row.Scan(&e.ID, &e.PlanHash, &e.NodeHash, &e.ContentHash, &ts, &csJSON, &inputsJSON); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	e.Timestamp = time.Unix(ts, 0)
+	if err := json.Unmarshal([]byte(csJSON), &e.ChangeSet); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(inputsJSON), &e.Inputs); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// LatestExecution returns the absolute most recent execution for a node+target,
+// regardless of status. This is used for checking if a node can be resumed.
+func (s *Store) LatestExecution(nodeID, target string) (*Execution, error) {
+	row := s.db.QueryRow(
+		`SELECT id, plan_hash, node_hash, content_hash, timestamp, status, changeset_json, inputs_json
+		 FROM executions
+		 WHERE node_id = ? AND target = ?
+		 ORDER BY id DESC LIMIT 1`,
+		nodeID, target,
+	)
+	var e Execution
+	var ts int64
+	var csJSON, inputsJSON string
+	e.NodeID = nodeID
+	e.Target = target
+	if err := row.Scan(&e.ID, &e.PlanHash, &e.NodeHash, &e.ContentHash, &ts, &e.Status, &csJSON, &inputsJSON); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -128,7 +162,7 @@ func (s *Store) LastSuccessful(nodeID, target string) (*Execution, error) {
 // List returns all executions for a node (most recent first).
 func (s *Store) List(nodeID string) ([]Execution, error) {
 	rows, err := s.db.Query(
-		`SELECT id, node_id, target, plan_hash, content_hash, timestamp, status, changeset_json, inputs_json
+		`SELECT id, node_id, target, plan_hash, node_hash, content_hash, timestamp, status, changeset_json, inputs_json
 		 FROM executions WHERE node_id = ? ORDER BY id DESC`,
 		nodeID,
 	)
@@ -142,7 +176,7 @@ func (s *Store) List(nodeID string) ([]Execution, error) {
 		var e Execution
 		var ts int64
 		var csJSON, inputsJSON string
-		if err := rows.Scan(&e.ID, &e.NodeID, &e.Target, &e.PlanHash, &e.ContentHash, &ts, &e.Status, &csJSON, &inputsJSON); err != nil {
+		if err := rows.Scan(&e.ID, &e.NodeID, &e.Target, &e.PlanHash, &e.NodeHash, &e.ContentHash, &ts, &e.Status, &csJSON, &inputsJSON); err != nil {
 			return nil, err
 		}
 		e.Timestamp = time.Unix(ts, 0)
@@ -165,7 +199,7 @@ func (s *Store) LastRun() ([]Execution, error) {
 	}
 	
 	rows, err := s.db.Query(
-		`SELECT id, node_id, target, plan_hash, content_hash, timestamp, status, changeset_json, inputs_json
+		`SELECT id, node_id, target, plan_hash, node_hash, content_hash, timestamp, status, changeset_json, inputs_json
 		 FROM executions WHERE plan_hash = ? ORDER BY id DESC`,
 		planHash,
 	)
@@ -179,7 +213,7 @@ func (s *Store) LastRun() ([]Execution, error) {
 		var e Execution
 		var ts int64
 		var csJSON, inputsJSON string
-		if err := rows.Scan(&e.ID, &e.NodeID, &e.Target, &e.PlanHash, &e.ContentHash, &ts, &e.Status, &csJSON, &inputsJSON); err != nil {
+		if err := rows.Scan(&e.ID, &e.NodeID, &e.Target, &e.PlanHash, &e.NodeHash, &e.ContentHash, &ts, &e.Status, &csJSON, &inputsJSON); err != nil {
 			return nil, err
 		}
 		e.Timestamp = time.Unix(ts, 0)
