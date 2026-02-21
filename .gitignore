@@ -1,0 +1,8 @@
+devopsctl
+*.db
+*.log
+*.out
+*.pid
+*.pp
+*.json
+*.sh
