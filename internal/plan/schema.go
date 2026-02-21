@@ -22,10 +22,19 @@ type Target struct {
 
 // Node is a single unit of work in the plan.
 type Node struct {
-	ID      string         `json:"id"`
-	Type    string         `json:"type"`
-	Targets []string       `json:"targets"` // Target IDs
-	Inputs  map[string]any `json:"inputs"`
+	ID            string         `json:"id"`
+	Type          string         `json:"type"`
+	Targets       []string       `json:"targets"` // Target IDs
+	DependsOn     []string       `json:"depends_on,omitempty"`
+	When          *WhenCondition `json:"when,omitempty"`
+	FailurePolicy string         `json:"failure_policy,omitempty"`
+	Inputs        map[string]any `json:"inputs"`
+}
+
+// WhenCondition represents conditional execution rules.
+type WhenCondition struct {
+	Node    string `json:"node"`
+	Changed bool   `json:"changed"`
 }
 
 // Load reads a JSON plan file from disk.

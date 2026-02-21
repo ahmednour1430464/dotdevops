@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS executions (
 	plan_hash      TEXT    NOT NULL DEFAULT '',
 	content_hash   TEXT    NOT NULL,
 	timestamp      INTEGER NOT NULL,
-	status         TEXT    NOT NULL,  -- "success" | "failed" | "partial" | "rolled_back"
+	status         TEXT    NOT NULL,  -- "pending" | "skipped" | "applied" | "failed" | "rolled_back"
 	changeset_json TEXT    NOT NULL,
 	inputs_json    TEXT    NOT NULL DEFAULT '{}'
 );
@@ -100,7 +100,7 @@ func (s *Store) LastSuccessful(nodeID, target string) (*Execution, error) {
 	row := s.db.QueryRow(
 		`SELECT id, plan_hash, content_hash, timestamp, changeset_json, inputs_json
 		 FROM executions
-		 WHERE node_id = ? AND target = ? AND status = 'success'
+		 WHERE node_id = ? AND target = ? AND status = 'applied'
 		 ORDER BY id DESC LIMIT 1`,
 		nodeID, target,
 	)

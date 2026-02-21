@@ -4,6 +4,7 @@ package controller
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -28,43 +29,200 @@ type RunOptions struct {
 	Parallelism int // 0 = unlimited
 }
 
-// Run executes a plan file end-to-end.
+// Run executes a plan file end-to-end using the execution graph.
 func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) error {
 	planHash := fmt.Sprintf("%x", sha256.Sum256(rawPlan))
 	if opts.Parallelism <= 0 {
 		opts.Parallelism = 10
 	}
 
-	// Build target index.
 	targetMap := make(map[string]plan.Target, len(p.Targets))
 	for _, t := range p.Targets {
 		targetMap[t.ID] = t
 	}
 
-	// Semaphore for parallelism control.
-	sem := make(chan struct{}, opts.Parallelism)
-	var wg sync.WaitGroup
+	graph, err := BuildGraph(p.Nodes)
+	if err != nil {
+		return fmt.Errorf("building execution graph: %w", err)
+	}
+
 	var mu sync.Mutex
 	var errs []error
 
-	for _, node := range p.Nodes {
-		node := node // capture
-		for _, tID := range node.Targets {
-			tID := tID
-			target, ok := targetMap[tID]
-			if !ok {
-				continue
-			}
-			sem <- struct{}{}
+	nodeStates := make(map[string]string)
+	nodeChanged := make(map[string]bool)
+	for id := range graph.Nodes {
+		nodeStates[id] = "pending"
+		nodeChanged[id] = false
+	}
+
+	inDegree := make(map[string]int)
+	for id, deg := range graph.InDegree {
+		inDegree[id] = deg
+	}
+
+	readyQueue := make(chan string, len(graph.Nodes))
+	for id, deg := range inDegree {
+		if deg == 0 {
+			readyQueue <- id
+		}
+	}
+
+	doneChan := make(chan string, len(graph.Nodes))
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	haltExecution := false
+
+	// Target-level semaphore
+	sem := make(chan struct{}, opts.Parallelism)
+
+	// Worker dispatcher
+	go func() {
+		for id := range readyQueue {
+			id := id
 			wg.Add(1)
 			go func() {
-				defer func() { <-sem; wg.Done() }()
-				if err := runNode(node, target, planHash, store, opts); err != nil {
-					mu.Lock()
-					errs = append(errs, fmt.Errorf("[%s → %s] %w", node.ID, target.ID, err))
+				defer wg.Done()
+
+				node := graph.Nodes[id]
+
+				mu.Lock()
+				if haltExecution {
+					nodeStates[id] = "skipped"
 					mu.Unlock()
+					doneChan <- id
+					return
 				}
+
+				cascadeSkip := false
+				for _, depID := range node.DependsOn {
+					st := nodeStates[depID]
+					if st == "failed" || st == "skipped" {
+						cascadeSkip = true
+						break
+					}
+				}
+
+				if !cascadeSkip && node.When != nil {
+					whenCond := node.When
+					depChanged := nodeChanged[whenCond.Node]
+					if depChanged != whenCond.Changed {
+						cascadeSkip = true
+						fmt.Printf("[%s] skipped: condition (node %s changed == %v) not met\n", node.ID, whenCond.Node, whenCond.Changed)
+					}
+				}
+				mu.Unlock()
+
+				if cascadeSkip {
+					mu.Lock()
+					nodeStates[id] = "skipped"
+					mu.Unlock()
+					
+					for _, tID := range node.Targets {
+						if target, ok := targetMap[tID]; ok {
+							inputsWithAddr := make(map[string]any)
+							for k, v := range node.Inputs {
+								inputsWithAddr[k] = v
+							}
+							inputsWithAddr["__target_addr"] = target.Address
+							_ = store.Record(node.ID, target.ID, planHash, "skipped", "skipped", proto.ChangeSet{}, inputsWithAddr)
+							fmt.Printf("[%s → %s] skipped (dependency or condition)\n", node.ID, target.ID)
+						}
+					}
+
+					doneChan <- id
+					return
+				}
+
+				// Execute on targets
+				var nodeErrs []error
+				var targetWg sync.WaitGroup
+				var targetMu sync.Mutex
+				anyChanged := false
+
+				for _, tID := range node.Targets {
+					target, ok := targetMap[tID]
+					if !ok {
+						continue
+					}
+					targetWg.Add(1)
+					sem <- struct{}{}
+					go func(t plan.Target) {
+						defer func() { <-sem; targetWg.Done() }()
+						
+						// Check cancel
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+
+						changed, err := runNode(ctx, node, t, planHash, store, opts)
+						
+						targetMu.Lock()
+						if err != nil {
+							nodeErrs = append(nodeErrs, fmt.Errorf("[%s → %s] %w", node.ID, t.ID, err))
+						}
+						if changed {
+							anyChanged = true
+						}
+						targetMu.Unlock()
+					}(target)
+				}
+				targetWg.Wait()
+
+				mu.Lock()
+				nodeChanged[id] = anyChanged
+				if len(nodeErrs) > 0 {
+					nodeStates[id] = "failed"
+					errs = append(errs, nodeErrs...)
+					policy := node.FailurePolicy
+					if policy == "" {
+						policy = "halt"
+					}
+					if policy == "halt" || policy == "rollback" {
+						haltExecution = true
+						cancel() // Stop remaining target executions
+					}
+					// If "continue", we just don't halt, dependents will cascade skip automatically.
+				} else {
+					nodeStates[id] = "applied"
+				}
+				
+				isHaltOrRollback := haltExecution && (node.FailurePolicy == "halt" || node.FailurePolicy == "rollback" || node.FailurePolicy == "")
+				failedPolicy := node.FailurePolicy
+				
+				mu.Unlock()
+
+				if len(nodeErrs) > 0 && failedPolicy == "rollback" && isHaltOrRollback {
+					fmt.Printf("[%s] triggering global rollback due to failed policy\n", node.ID)
+					_ = RollbackLast(store)
+				}
+
+				doneChan <- id
 			}()
+		}
+	}()
+
+	// Wait for graph completion
+	completed := 0
+	for id := range doneChan {
+		completed++
+		
+		mu.Lock()
+		// Unlock dependants
+		for _, dep := range graph.Edges[id] {
+			inDegree[dep]--
+			if inDegree[dep] == 0 {
+				readyQueue <- dep
+			}
+		}
+		mu.Unlock()
+
+		if completed == len(graph.Nodes) {
+			break
 		}
 	}
 	wg.Wait()
@@ -78,21 +236,22 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 	return nil
 }
 
-// runNode handles one (node × target) pair.
-func runNode(node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) error {
+// runNode handles one (node × target) pair. Return (changed, error).
+func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) (bool, error) {
 	addr := addressWithPort(target.Address)
 	if node.Type == "file.sync" {
-		return runFileSync(addr, node, target, planHash, store, opts)
+		return runFileSync(ctx, addr, node, target, planHash, store, opts)
 	} else if node.Type == "process.exec" {
-		return runProcessExec(addr, node, target, planHash, store, opts)
+		return runProcessExec(ctx, addr, node, target, planHash, store, opts)
 	}
-	return fmt.Errorf("unsupported primitive type: %s", node.Type)
+	return false, fmt.Errorf("unsupported primitive type: %s", node.Type)
 }
 
-func runFileSync(addr string, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) error {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) (bool, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("connect to agent %s: %w", addr, err)
+		return false, fmt.Errorf("connect to agent %s: %w", addr, err)
 	}
 	defer conn.Close()
 
@@ -108,10 +267,10 @@ func runFileSync(addr string, node plan.Node, target plan.Target, planHash strin
 	})
 	var detectResp proto.DetectResp
 	if err := readJSON(r, &detectResp); err != nil {
-		return fmt.Errorf("detect response: %w", err)
+		return false, fmt.Errorf("detect response: %w", err)
 	}
 	if detectResp.Error != "" {
-		return fmt.Errorf("agent detect error: %s", detectResp.Error)
+		return false, fmt.Errorf("agent detect error: %s", detectResp.Error)
 	}
 	destTree := detectResp.State
 
@@ -119,7 +278,7 @@ func runFileSync(addr string, node plan.Node, target plan.Target, planHash strin
 	src, _ := node.Inputs["src"].(string)
 	srcTree, err := filesync.BuildSourceTree(src)
 	if err != nil {
-		return fmt.Errorf("building source tree: %w", err)
+		return false, fmt.Errorf("building source tree: %w", err)
 	}
 
 	var deleteExtra bool
@@ -139,21 +298,20 @@ func runFileSync(addr string, node plan.Node, target plan.Target, planHash strin
 
 	if filesync.IsEmpty(cs) {
 		fmt.Printf("[%s → %s] ✓ no changes\n", node.ID, target.ID)
-		return nil
+		return false, nil
 	}
 
 	if opts.DryRun {
 		fmt.Printf("[%s → %s] dry-run: %d change(s) would be applied\n",
 			node.ID, target.ID, totalChanges(cs))
-		return nil
+		return true, nil
 	}
 
 	// ── Step 4: Apply ─────────────────────────────────────────────────────────
-	// Re-dial for apply (separates detect and apply connections cleanly).
 	conn.Close()
-	conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
+	conn, err = d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("re-connect for apply: %w", err)
+		return false, fmt.Errorf("re-connect for apply: %w", err)
 	}
 	defer conn.Close()
 	r = bufio.NewReader(conn)
@@ -170,22 +328,20 @@ func runFileSync(addr string, node plan.Node, target plan.Target, planHash strin
 		Inputs: node.Inputs,
 	}
 	if err := enc.Encode(applyReq); err != nil {
-		return fmt.Errorf("sending apply_req: %w", err)
+		return false, fmt.Errorf("sending apply_req: %w", err)
 	}
 
-	// Stream file chunks for paths that need transfer.
 	needsTransfer := append(cs.Create, cs.Update...)
 	if err := streamFiles(src, needsTransfer, enc); err != nil {
-		return fmt.Errorf("streaming files: %w", err)
+		return false, fmt.Errorf("streaming files: %w", err)
 	}
 
-	// Read apply response.
 	var applyResp proto.ApplyResp
 	if err := readJSON(r, &applyResp); err != nil {
-		return fmt.Errorf("apply response: %w", err)
+		return false, fmt.Errorf("apply response: %w", err)
 	}
 	if applyResp.Error != "" {
-		return fmt.Errorf("agent apply error: %s", applyResp.Error)
+		return false, fmt.Errorf("agent apply error: %s", applyResp.Error)
 	}
 
 	res := applyResp.Result
@@ -198,34 +354,41 @@ func runFileSync(addr string, node plan.Node, target plan.Target, planHash strin
 		inputsWithAddr[k] = v
 	}
 	inputsWithAddr["__target_addr"] = target.Address
-	if err := store.Record(node.ID, target.ID, planHash, contentHash, res.Status, cs, inputsWithAddr); err != nil {
+	
+	dbStatus := res.Status
+	if dbStatus == "success" {
+		dbStatus = "applied"
+	}
+	
+	if err := store.Record(node.ID, target.ID, planHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
 	// ── Step 6: Rollback on fatal failure ─────────────────────────────────────
 	if res.Status == "failed" {
 		if res.RollbackSafe {
-			fmt.Printf("[%s → %s] triggering rollback…\n", node.ID, target.ID)
+			fmt.Printf("[%s → %s] triggering agent-level rollback…\n", node.ID, target.ID)
 			if err := doRollback(addr, node, planHash, cs); err != nil {
 				fmt.Fprintf(os.Stderr, "WARN: rollback error: %v\n", err)
 			}
 		}
-		return fmt.Errorf("apply failed: %s", res.Message)
+		return true, fmt.Errorf("apply failed: %s", res.Message)
 	}
 
-	return nil
+	return true, nil
 }
 
-func runProcessExec(addr string, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) error {
+func runProcessExec(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash string, store *state.Store, opts RunOptions) (bool, error) {
 	if opts.DryRun {
 		cmdArr, _ := node.Inputs["cmd"].([]any)
 		fmt.Printf("[%s → %s] dry-run: would execute %v\n", node.ID, target.ID, cmdArr)
-		return nil
+		return true, nil
 	}
 
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("connect to agent %s: %w", addr, err)
+		return false, fmt.Errorf("connect to agent %s: %w", addr, err)
 	}
 	defer conn.Close()
 
@@ -243,15 +406,15 @@ func runProcessExec(addr string, node plan.Node, target plan.Target, planHash st
 		Inputs: node.Inputs,
 	}
 	if err := enc.Encode(applyReq); err != nil {
-		return fmt.Errorf("sending apply_req: %w", err)
+		return false, fmt.Errorf("sending apply_req: %w", err)
 	}
 
 	var applyResp proto.ApplyResp
 	if err := readJSON(r, &applyResp); err != nil {
-		return fmt.Errorf("apply response: %w", err)
+		return false, fmt.Errorf("apply response: %w", err)
 	}
 	if applyResp.Error != "" {
-		return fmt.Errorf("agent apply error: %s", applyResp.Error)
+		return false, fmt.Errorf("agent apply error: %s", applyResp.Error)
 	}
 
 	res := applyResp.Result
@@ -269,15 +432,21 @@ func runProcessExec(addr string, node plan.Node, target plan.Target, planHash st
 		inputsWithAddr[k] = v
 	}
 	inputsWithAddr["__target_addr"] = target.Address
-	if err := store.Record(node.ID, target.ID, planHash, contentHash, res.Status, proto.ChangeSet{}, inputsWithAddr); err != nil {
+	
+	dbStatus := res.Status
+	if dbStatus == "success" {
+		dbStatus = "applied"
+	}
+	
+	if err := store.Record(node.ID, target.ID, planHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
 	if res.Status == "failed" {
-		return fmt.Errorf("process failed with exit code %d (class: %s)", res.ExitCode, res.Class)
+		return true, fmt.Errorf("process failed with exit code %d (class: %s)", res.ExitCode, res.Class)
 	}
 
-	return nil
+	return true, nil
 }
 
 // streamFiles sends file chunk messages for the given relative paths.
@@ -394,7 +563,7 @@ func RollbackLast(store *state.Store) error {
 	}
 
 	for _, ex := range execs {
-		if ex.Status != "success" && ex.Status != "partial" {
+		if ex.Status != "applied" && ex.Status != "partial" {
 			continue
 		}
 		// Construct a dummy node to pass into doRollback
@@ -403,7 +572,7 @@ func RollbackLast(store *state.Store) error {
 			Type:   "file.sync", // assume filesync for now, process.exec is not rollbackable yet
 			Inputs: ex.Inputs,
 		}
-		
+
 		addrStr, _ := ex.Inputs["__target_addr"].(string)
 		if addrStr == "" {
 			addrStr = ex.Target
