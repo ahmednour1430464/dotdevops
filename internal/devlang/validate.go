@@ -18,6 +18,181 @@ func (e *SemanticError) Error() string {
 	return fmt.Sprintf("%s:%d:%d: error: %s", e.Path, e.Pos.Line, e.Pos.Col, e.Msg)
 }
 
+type LetEnv map[string]Expr
+
+// ValidateV0_2 enforces the v0.2 language rules on an AST file and returns the collected let environment.
+func ValidateV0_2(file *File) ([]error, LetEnv) {
+	var errs []error
+	lets := LetEnv{}
+
+	// 1. Reject unsupported constructs outright (lets are allowed in v0.2).
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ForDecl:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  "for expressions are not supported in language version 0.2",
+			})
+		case *StepDecl:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  "steps are not supported in language version 0.2",
+			})
+		case *ModuleDecl:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  "modules are not supported in language version 0.2",
+			})
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs, nil
+	}
+
+	// 2. Collect let bindings and build the environment.
+	for _, decl := range file.Decls {
+		letDecl, ok := decl.(*LetDecl)
+		if !ok {
+			continue
+		}
+
+		if _, exists := lets[letDecl.Name]; exists {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  letDecl.Pos(),
+				Msg:  fmt.Sprintf("duplicate let %q", letDecl.Name),
+			})
+			continue
+		}
+
+		switch v := letDecl.Value.(type) {
+		case *StringLiteral, *BoolLiteral:
+			lets[letDecl.Name] = letDecl.Value
+		case *ListLiteral:
+			if !allStringLits(v.Elems) {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  letDecl.Value.Pos(),
+					Msg:  fmt.Sprintf("let %q value must be a string, bool, or list of string literals", letDecl.Name),
+				})
+			} else {
+				lets[letDecl.Name] = letDecl.Value
+			}
+		default:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  letDecl.Value.Pos(),
+				Msg:  fmt.Sprintf("let %q value must be a string, bool, or list of string literals", letDecl.Name),
+			})
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs, nil
+	}
+
+	// 3. Build symbol tables for targets and nodes.
+	targets := map[string]*TargetDecl{}
+	nodes := map[string]*NodeDecl{}
+
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *TargetDecl:
+			if _, exists := targets[d.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("duplicate target %q", d.Name),
+				})
+			} else {
+				targets[d.Name] = d
+			}
+		case *NodeDecl:
+			if _, exists := nodes[d.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("duplicate node %q", d.Name),
+				})
+			} else {
+				nodes[d.Name] = d
+			}
+		}
+	}
+
+	// 4. Per-node checks.
+	for _, node := range nodes {
+		// targets must exist and must not be let bindings
+		for _, tIdent := range node.Targets {
+			if _, isLet := lets[tIdent.Name]; isLet {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  tIdent.Pos(),
+					Msg:  fmt.Sprintf("let binding %q cannot be used in targets; targets must reference target declarations", tIdent.Name),
+				})
+				continue
+			}
+			if _, ok := targets[tIdent.Name]; !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  tIdent.Pos(),
+					Msg:  fmt.Sprintf("unknown target %q", tIdent.Name),
+				})
+			}
+		}
+
+		// depends_on by node IDs
+		for _, dep := range node.DependsOn {
+			if _, ok := nodes[dep.Value]; !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  dep.Pos(),
+					Msg:  fmt.Sprintf("unknown depends_on node %q", dep.Value),
+				})
+			}
+		}
+
+		// primitive type
+		switch node.Type.Name {
+		case "file.sync", "process.exec":
+			// ok
+		default:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.Type.Pos(),
+				Msg:  fmt.Sprintf("unknown primitive type %q", node.Type.Name),
+			})
+		}
+
+		// failure_policy
+		if node.FailurePolicy != nil {
+			fp := node.FailurePolicy.Name
+			if fp != "halt" && fp != "continue" && fp != "rollback" {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  node.FailurePolicy.Pos(),
+					Msg:  fmt.Sprintf("invalid failure_policy %q; expected one of: halt, continue, rollback", fp),
+				})
+			}
+		}
+
+		// validate primitive-specific inputs after resolving lets in value position
+		resolvedNode := *node
+		resolvedNode.Inputs = make(map[string]Expr, len(node.Inputs))
+		for key, expr := range node.Inputs {
+			resolvedNode.Inputs[key] = resolveLetExpr(expr, lets)
+		}
+
+		validatePrimitiveInputsV0_1(file.Path, &resolvedNode, &errs)
+	}
+
+	return errs, lets
+}
+
 // ValidateV0_1 enforces the v0.1 language rules on an AST file.
 func ValidateV0_1(file *File) []error {
 	var errs []error
@@ -218,6 +393,20 @@ func allStringLits(elems []Expr) bool {
 	return true
 }
 
+// resolveLetExpr resolves an identifier expression to its let-bound value if present.
+// Non-identifier expressions are returned unchanged.
+func resolveLetExpr(e Expr, lets LetEnv) Expr {
+	if ident, ok := e.(*Ident); ok {
+		if lets == nil {
+			return e
+		}
+		if v, ok := lets[ident.Name]; ok {
+			return v
+		}
+	}
+	return e
+}
+
 // CompileResult is the high-level result of compiling a .devops file.
 type CompileResult struct {
 	Plan    *plan.Plan
@@ -247,6 +436,44 @@ func CompileFileV0_1(path string, src []byte) (*CompileResult, error) {
 		errs := make([]error, len(vErrs))
 		for i, e := range vErrs {
 			errs[i] = fmt.Errorf("%s: error: %v", path, e)
+		}
+		return &CompileResult{Errors: errs}, nil
+	}
+
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompileResult{
+		Plan:    p,
+		RawJSON: raw,
+		Errors:  nil,
+	}, nil
+}
+
+// CompileFileV0_2 runs parse, v0.2 validate, lower with lets, and IR validation.
+func CompileFileV0_2(path string, src []byte) (*CompileResult, error) {
+	file, parseErrs := ParseFile(path, src)
+	if len(parseErrs) > 0 {
+		return &CompileResult{Errors: parseErrs}, nil
+	}
+
+	semErrs, lets := ValidateV0_2(file)
+	if len(semErrs) > 0 {
+		return &CompileResult{Errors: semErrs}, nil
+	}
+
+	p, err := LowerToPlanV0_2(file, lets)
+	if err != nil {
+		return nil, err
+	}
+
+	// IR-level validation using existing plan.Validate
+	if vErrs := plan.Validate(p); len(vErrs) > 0 {
+		errs := make([]error, len(vErrs))
+		for i, e := range vErrs {
+				errs[i] = fmt.Errorf("%s: error: %v", path, e)
 		}
 		return &CompileResult{Errors: errs}, nil
 	}
