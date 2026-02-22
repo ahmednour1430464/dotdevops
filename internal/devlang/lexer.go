@@ -21,6 +21,7 @@ const (
 	KW_STEP
 	KW_FOR
 	KW_IN
+	KW_PARAM
 
 	// Operators & punctuation
 	EQUAL     // =
@@ -272,6 +273,8 @@ func (l *Lexer) readIdentOrKeyword() Token {
 		return Token{Type: KW_FOR, Lexeme: lexeme, Pos: startPos}
 	case "in":
 		return Token{Type: KW_IN, Lexeme: lexeme, Pos: startPos}
+	case "param":
+		return Token{Type: KW_PARAM, Lexeme: lexeme, Pos: startPos}
 	case "true", "false":
 		return Token{Type: BOOL, Lexeme: lexeme, Pos: startPos}
 	}

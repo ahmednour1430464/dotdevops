@@ -62,9 +62,17 @@ type ForDecl struct {
 func (d *ForDecl) Pos() Position { return d.PosInfo }
 func (d *ForDecl) declNode()     {}
 
+// ParamDecl represents a parameter declaration in a step (v0.6+).
+type ParamDecl struct {
+	Name    string
+	Default Expr     // nil if required parameter
+	PosInfo Position
+}
+
 // StepDecl is parsed but rejected in v0.1.
 type StepDecl struct {
 	Name    string
+	Params  []*ParamDecl // v0.6+: parameter declarations
 	Body    *NodeDecl
 	PosInfo Position
 }

@@ -1,0 +1,10 @@
+target "local" {
+  address = "local"
+}
+
+node "production-deploy" {
+  type    = file.sync
+  targets = [local]
+  src     = "./build"
+  dest    = "/opt/app"
+}

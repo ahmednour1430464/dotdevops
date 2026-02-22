@@ -1,0 +1,17 @@
+target "local" {
+  address = "local"
+}
+
+step "sync_with_backup" {
+  param backup_enabled = true
+  param dest_override = "/var/www"
+  
+  type = file.sync
+  src  = "./build"
+  dest = dest_override
+}
+
+node "deploy" {
+  type    = sync_with_backup
+  targets = [local]
+}

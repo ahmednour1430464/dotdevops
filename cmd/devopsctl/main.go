@@ -54,6 +54,8 @@ func main() {
 				switch applyLang {
 				case "", "v0.3":
 					res, compErr = devlang.CompileFileV0_3(planPath, src)
+				case "v0.6":
+					res, compErr = devlang.CompileFileV0_6(planPath, src)
 				case "v0.5":
 					res, compErr = devlang.CompileFileV0_5(planPath, src)
 				case "v0.4":
@@ -63,7 +65,7 @@ func main() {
 				case "v0.1":
 					res, compErr = devlang.CompileFileV0_1(planPath, src)
 				default:
-					return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5)", applyLang)
+					return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5, v0.6)", applyLang)
 				}
 				if compErr != nil {
 					return fmt.Errorf("compile .devops: %w", compErr)
@@ -103,7 +105,7 @@ func main() {
 	applyCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show diff without applying changes")
 	applyCmd.Flags().IntVar(&parallelism, "parallelism", 10, "Max concurrent node executions")
 	applyCmd.Flags().BoolVar(&resume, "resume", false, "Safely resume execution from the previous failure point")
-	applyCmd.Flags().StringVar(&applyLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, or v0.5)")
+	applyCmd.Flags().StringVar(&applyLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
 
 	// ── devopsctl reconcile ───────────────────────────────────────────────────
 	var recDryRun bool
@@ -133,6 +135,8 @@ func main() {
 				switch recLang {
 				case "", "v0.3":
 					res, compErr = devlang.CompileFileV0_3(planPath, src)
+				case "v0.6":
+					res, compErr = devlang.CompileFileV0_6(planPath, src)
 				case "v0.5":
 					res, compErr = devlang.CompileFileV0_5(planPath, src)
 				case "v0.4":
@@ -142,7 +146,7 @@ func main() {
 				case "v0.1":
 					res, compErr = devlang.CompileFileV0_1(planPath, src)
 				default:
-					return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5)", recLang)
+					return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5, v0.6)", recLang)
 				}
 				if compErr != nil {
 					return fmt.Errorf("compile .devops: %w", compErr)
@@ -181,7 +185,7 @@ func main() {
 	}
 	reconcileCmd.Flags().BoolVar(&recDryRun, "dry-run", false, "Show diff without applying changes")
 	reconcileCmd.Flags().IntVar(&recParallelism, "parallelism", 10, "Max concurrent node executions")
-	reconcileCmd.Flags().StringVar(&recLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, or v0.5)")
+	reconcileCmd.Flags().StringVar(&recLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
 
 	// ── devopsctl agent ───────────────────────────────────────────────────────
 	var agentAddr string
@@ -267,6 +271,8 @@ func main() {
 			switch buildLang {
 			case "", "v0.3":
 				res, compErr = devlang.CompileFileV0_3(path, src)
+			case "v0.6":
+				res, compErr = devlang.CompileFileV0_6(path, src)
 			case "v0.5":
 				res, compErr = devlang.CompileFileV0_5(path, src)
 			case "v0.4":
@@ -276,7 +282,7 @@ func main() {
 			case "v0.1":
 				res, compErr = devlang.CompileFileV0_1(path, src)
 			default:
-				return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5)", buildLang)
+				return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5, v0.6)", buildLang)
 			}
 			if compErr != nil {
 				return fmt.Errorf("compile .devops: %w", compErr)
@@ -298,7 +304,7 @@ func main() {
 		},
 	}
 	planBuildCmd.Flags().StringVarP(&buildOut, "output", "o", "", "Output file for compiled plan JSON (default stdout)")
-	planBuildCmd.Flags().StringVar(&buildLang, "lang", "v0.3", "Language version for .devops files (v0.1, v0.2, v0.3, v0.4, or v0.5)")
+	planBuildCmd.Flags().StringVar(&buildLang, "lang", "v0.3", "Language version for .devops files (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
 	planCmd.AddCommand(planHashCmd, planBuildCmd)
 
 	// ── devopsctl rollback ────────────────────────────────────────────────────

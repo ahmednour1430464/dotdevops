@@ -1,0 +1,18 @@
+target "local" {
+  address = "local"
+}
+
+step "bad_step" {
+  param retry
+  param retry
+  
+  type = file.sync
+  src  = "./src"
+  dest = "/dest"
+}
+
+node "test" {
+  type    = bad_step
+  targets = [local]
+  retry   = "value"
+}

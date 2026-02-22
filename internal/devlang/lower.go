@@ -595,3 +595,275 @@ func lowerNodeToPlan(node *NodeDecl, lets LetEnv) (plan.Node, error) {
 
 	return n, nil
 }
+
+// LowerToPlanV0_6 converts a validated AST with steps, parameters, and for-loops into a plan.Plan IR.
+// Parameters are substituted during step expansion (v0.6 new feature).
+func LowerToPlanV0_6(file *File, lets LetEnv, steps map[string]*StepDecl, forLoops []*ForDecl) (*plan.Plan, error) {
+	p := &plan.Plan{
+		Version: "1.0",
+		Targets: make([]plan.Target, 0),
+		Nodes:   make([]plan.Node, 0),
+	}
+
+	// Collect targets.
+	for _, decl := range file.Decls {
+		targetDecl, ok := decl.(*TargetDecl)
+		if !ok {
+			continue
+		}
+		if targetDecl.Address == nil {
+			return nil, fmt.Errorf("%s:%d:%d: target %q missing address", file.Path, targetDecl.Pos().Line, targetDecl.Pos().Col, targetDecl.Name)
+		}
+		p.Targets = append(p.Targets, plan.Target{
+			ID:      targetDecl.Name,
+			Address: targetDecl.Address.Value,
+		})
+	}
+
+	// Step expansion cache for memoization
+	primitiveTypes := map[string]bool{
+		"file.sync":    true,
+		"process.exec": true,
+	}
+
+	// Collect and expand regular nodes (not in for-loops).
+	for _, decl := range file.Decls {
+		nodeDecl, ok := decl.(*NodeDecl)
+		if !ok {
+			continue
+		}
+
+		if nodeDecl.Type == nil {
+			return nil, fmt.Errorf("%s:%d:%d: node %q missing type", file.Path, nodeDecl.Pos().Line, nodeDecl.Pos().Col, nodeDecl.Name)
+		}
+
+		effectiveNode, err := expandNodeWithStepsV0_6(nodeDecl, steps, primitiveTypes, lets)
+		if err != nil {
+			return nil, err
+		}
+
+		n, err := lowerNodeToPlan(effectiveNode, lets)
+		if err != nil {
+			return nil, err
+		}
+
+		p.Nodes = append(p.Nodes, n)
+	}
+
+	// Unroll for-loops and expand nodes.
+	for _, forDecl := range forLoops {
+		// Resolve range to list literal (already validated)
+		rangeExpr := forDecl.Range
+		if ident, ok := rangeExpr.(*Ident); ok {
+			if letVal, exists := lets[ident.Name]; exists {
+				rangeExpr = letVal
+			}
+		}
+
+		listLit, ok := rangeExpr.(*ListLiteral)
+		if !ok {
+			return nil, fmt.Errorf("internal error: for-loop range is not a list literal")
+		}
+
+		// Unroll loop: for each element, expand all nodes in body
+		for _, elem := range listLit.Elems {
+			strLit, ok := elem.(*StringLiteral)
+			if !ok {
+				continue
+			}
+
+			loopVarValue := strLit.Value
+
+			// Process each node in for-loop body
+			for _, bodyDecl := range forDecl.Body {
+				nodeDecl, ok := bodyDecl.(*NodeDecl)
+				if !ok {
+					continue
+				}
+
+				// Deep clone node to prevent aliasing
+				clonedNode := deepCloneNode(nodeDecl)
+
+				// Substitute ${varName} with loop variable value
+				substituteLoopVariable(clonedNode, forDecl.VarName, loopVarValue)
+
+				// Expand with steps if needed
+				effectiveNode, err := expandNodeWithStepsV0_6(clonedNode, steps, primitiveTypes, lets)
+				if err != nil {
+					return nil, err
+				}
+
+				n, err := lowerNodeToPlan(effectiveNode, lets)
+				if err != nil {
+					return nil, err
+				}
+
+				p.Nodes = append(p.Nodes, n)
+			}
+		}
+	}
+
+	return p, nil
+}
+
+// expandNodeWithStepsV0_6 recursively expands a node that may reference steps (with parameter substitution).
+func expandNodeWithStepsV0_6(nodeDecl *NodeDecl, steps map[string]*StepDecl, primitiveTypes map[string]bool, lets LetEnv) (*NodeDecl, error) {
+	if nodeDecl.Type == nil {
+		return nil, fmt.Errorf("node missing type")
+	}
+
+	typeName := nodeDecl.Type.Name
+
+	// Check if this node references a step
+	stepDecl, isStep := steps[typeName]
+
+	if !isStep {
+		// Regular primitive node
+		return nodeDecl, nil
+	}
+
+	// v0.6: Build parameter environment from node inputs and step defaults
+	paramEnv := make(map[string]Expr)
+	for _, param := range stepDecl.Params {
+		// Check if node provides this parameter
+		if providedValue, ok := nodeDecl.Inputs[param.Name]; ok {
+			paramEnv[param.Name] = providedValue
+		} else if param.Default != nil {
+			// Use default value
+			paramEnv[param.Name] = param.Default
+		}
+		// If neither provided nor default, validation should have caught this (required param missing)
+	}
+
+	// Recursively expand the step with parameter environment
+	expandedStep, err := expandStepRecursiveV0_6(stepDecl, steps, primitiveTypes, paramEnv, lets, make(map[string]*NodeDecl))
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge node with expanded step
+	effectiveNode := deepCloneNode(expandedStep)
+	effectiveNode.Name = nodeDecl.Name            // Use node's ID
+	effectiveNode.Targets = nodeDecl.Targets      // From node
+	effectiveNode.DependsOn = nodeDecl.DependsOn  // From node
+
+	// Merge inputs: node overrides step (non-parameter inputs)
+	for key, expr := range nodeDecl.Inputs {
+		// Skip parameters (already handled in paramEnv)
+		isParam := false
+		for _, param := range stepDecl.Params {
+			if key == param.Name {
+				isParam = true
+				break
+			}
+		}
+		if !isParam {
+			effectiveNode.Inputs[key] = expr
+		}
+	}
+
+	// Node can override failure_policy
+	if nodeDecl.FailurePolicy != nil {
+		effectiveNode.FailurePolicy = nodeDecl.FailurePolicy
+	}
+
+	return effectiveNode, nil
+}
+
+// expandStepRecursiveV0_6 recursively expands a step to its primitive form (with parameter substitution).
+func expandStepRecursiveV0_6(stepDecl *StepDecl, steps map[string]*StepDecl, primitiveTypes map[string]bool, paramEnv map[string]Expr, lets LetEnv, cache map[string]*NodeDecl) (*NodeDecl, error) {
+	// Note: Caching with parameters is complex (would need to include paramEnv in cache key).
+	// For simplicity in v0.6, we'll skip memoization across different parameter bindings.
+	// This is still deterministic and correct, just potentially less efficient.
+
+	if stepDecl.Body.Type == nil {
+		return nil, fmt.Errorf("step %q missing type", stepDecl.Name)
+	}
+
+	typeName := stepDecl.Body.Type.Name
+
+	var base *NodeDecl
+
+	if primitiveTypes[typeName] {
+		// Base case: primitive
+		base = deepCloneNode(stepDecl.Body)
+	} else {
+		// Recursive case: expand parent step
+		parentStep, ok := steps[typeName]
+		if !ok {
+			return nil, fmt.Errorf("step %q references unknown step %q", stepDecl.Name, typeName)
+		}
+
+		// Build parameter environment for parent step
+		parentParamEnv := make(map[string]Expr)
+		for _, param := range parentStep.Params {
+			// Check if current step body provides this parameter
+			if providedValue, ok := stepDecl.Body.Inputs[param.Name]; ok {
+				// Substitute current step's parameters in provided value
+				substituted := substituteParamsInExpr(providedValue, paramEnv)
+				parentParamEnv[param.Name] = substituted
+			} else if param.Default != nil {
+				// Use default value
+				parentParamEnv[param.Name] = param.Default
+			}
+		}
+
+		parent, err := expandStepRecursiveV0_6(parentStep, steps, primitiveTypes, parentParamEnv, lets, cache)
+		if err != nil {
+			return nil, err
+		}
+		base = deepCloneNode(parent)
+	}
+
+	// Merge step inputs into base (with parameter substitution)
+	for key, expr := range stepDecl.Body.Inputs {
+		// Substitute parameters in expression
+		substituted := substituteParamsInExpr(expr, paramEnv)
+		base.Inputs[key] = substituted
+	}
+
+	// Handle failure_policy
+	if stepDecl.Body.FailurePolicy != nil {
+		base.FailurePolicy = stepDecl.Body.FailurePolicy
+	}
+
+	return base, nil
+}
+
+// substituteParamsInExpr substitutes parameter references in an expression with their values from paramEnv.
+// Identifier resolution order: paramEnv first, then expression as-is (will be resolved by lets later).
+func substituteParamsInExpr(expr Expr, paramEnv map[string]Expr) Expr {
+	switch e := expr.(type) {
+	case *Ident:
+		if paramVal, ok := paramEnv[e.Name]; ok {
+			return paramVal
+		}
+		return e
+	case *BinaryExpr:
+		return &BinaryExpr{
+			Left:    substituteParamsInExpr(e.Left, paramEnv),
+			Op:      e.Op,
+			Right:   substituteParamsInExpr(e.Right, paramEnv),
+			PosInfo: e.PosInfo,
+		}
+	case *TernaryExpr:
+		return &TernaryExpr{
+			Cond:      substituteParamsInExpr(e.Cond, paramEnv),
+			TrueExpr:  substituteParamsInExpr(e.TrueExpr, paramEnv),
+			FalseExpr: substituteParamsInExpr(e.FalseExpr, paramEnv),
+			PosInfo:   e.PosInfo,
+		}
+	case *ListLiteral:
+		newElems := make([]Expr, len(e.Elems))
+		for i, elem := range e.Elems {
+			newElems[i] = substituteParamsInExpr(elem, paramEnv)
+		}
+		return &ListLiteral{
+			Elems:   newElems,
+			PosInfo: e.PosInfo,
+		}
+	default:
+		// Literals (StringLiteral, BoolLiteral) are not substituted
+		return expr
+	}
+}

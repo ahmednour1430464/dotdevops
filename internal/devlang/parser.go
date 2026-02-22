@@ -319,7 +319,7 @@ func (p *Parser) parseForDecl() Decl {
 	}
 }
 
-// step "name" { node-body }
+// step "name" { param* node-body }
 func (p *Parser) parseStepDecl() Decl {
 	startPos := p.cur.Pos
 	p.nextToken()
@@ -334,15 +334,69 @@ func (p *Parser) parseStepDecl() Decl {
 		p.addError("expected '{' after step name", p.cur.Pos)
 	}
 
-	// Reuse node-body parsing by constructing a NodeDecl manually.
+	// Phase 1: Parse param declarations (must come first)
+	var params []*ParamDecl
+	seenBodyField := false
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			// Empty step body
+			return &StepDecl{
+				Name:    nameTok.Lexeme,
+				Params:  params,
+				Body:    &NodeDecl{Name: nameTok.Lexeme, Inputs: make(map[string]Expr), PosInfo: startPos},
+				PosInfo: startPos,
+			}
+		}
+		
+		// Check if this is a param declaration
+		if p.cur.Type == KW_PARAM {
+			if seenBodyField {
+				p.addError("param declarations must appear before step body fields", p.cur.Pos)
+				p.synchronize()
+				break
+			}
+			
+			paramPos := p.cur.Pos
+			p.nextToken()
+			if p.cur.Type != IDENT {
+				p.addError("expected parameter name identifier", p.cur.Pos)
+				p.synchronize()
+				continue
+			}
+			
+			paramName := p.cur.Lexeme
+			p.nextToken()
+			
+			var defaultExpr Expr
+			if p.cur.Type == EQUAL {
+				// Optional parameter with default
+				p.nextToken()
+				defaultExpr = p.parseExpr()
+			}
+			
+			params = append(params, &ParamDecl{
+				Name:    paramName,
+				Default: defaultExpr,
+				PosInfo: paramPos,
+			})
+			continue
+		}
+		
+		// Not a param, so we've entered the step body section
+		seenBodyField = true
+		break
+	}
+
+	// Phase 2: Parse step body (reuse node-body parsing)
 	node := &NodeDecl{
 		Name:    nameTok.Lexeme,
 		Inputs:  make(map[string]Expr),
 		PosInfo: startPos,
 	}
 
+	// p.cur is now positioned at the first body field identifier
 	for {
-		p.nextToken()
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
 			break
 		}
@@ -404,10 +458,13 @@ func (p *Parser) parseStepDecl() Decl {
 		default:
 			node.Inputs[key] = expr
 		}
+		
+		p.nextToken()
 	}
 
 	return &StepDecl{
 		Name:    nameTok.Lexeme,
+		Params:  params,
 		Body:    node,
 		PosInfo: startPos,
 	}

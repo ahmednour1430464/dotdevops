@@ -1,0 +1,18 @@
+target "local" {
+  address = "local"
+}
+
+step "deploy_to" {
+  param dest_path
+  param backup = false
+  
+  type = file.sync
+  src  = "./src"
+  dest = dest_path
+}
+
+node "app-deploy" {
+  type      = deploy_to
+  targets   = [local]
+  dest_path = "/opt/app"
+}
