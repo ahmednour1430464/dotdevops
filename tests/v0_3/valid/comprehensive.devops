@@ -1,0 +1,45 @@
+target "local" {
+  address = "localhost"
+}
+
+// v0.3 Expression Showcase
+
+// String concatenation
+let base_dir = "/var/www"
+let app_name = "myapp"
+let full_path = base_dir + "/" + app_name
+
+// Boolean logic
+let is_prod = false
+let is_staging = false
+let is_dev = true
+let deploy_enabled = is_dev || is_staging
+let strict_mode = is_prod && deploy_enabled
+
+// Equality checks
+let env = "development"
+let check_prod = env == "production"
+let check_not_dev = env != "development"
+
+// Ternary expressions
+let log_level = is_prod ? "error" : "debug"
+let backup_dir = is_prod ? "/backup/prod" : "/backup/dev"
+let max_connections = is_prod ? "100" : "10"
+
+// Complex nested expressions
+let deploy_path = is_prod ? base_dir + "/prod/" + app_name : base_dir + "/dev/" + app_name
+
+node "deploy" {
+  type = file.sync
+  targets = [local]
+  src = "./build"
+  dest = deploy_path
+}
+
+node "configure" {
+  type = process.exec
+  targets = [local]
+  depends_on = ["deploy"]
+  cmd = ["echo", "test"]
+  cwd = deploy_path
+}

@@ -1,0 +1,14 @@
+target "local" {
+  address = "localhost"
+}
+
+let base = "/var/www"
+let app = "myapp"
+let full_path = base + "/" + app
+
+node "sync" {
+  type = file.sync
+  targets = [local]
+  src = "./src"
+  dest = full_path
+}

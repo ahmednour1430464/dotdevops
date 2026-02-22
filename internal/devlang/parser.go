@@ -448,8 +448,128 @@ func (p *Parser) parseModuleDecl() Decl {
 	}
 }
 
-// parseExpr parses a simple expression: string, bool, identifier or list.
+// parseExpr parses expressions with precedence climbing.
+// Precedence (lowest to highest): ternary (?:), ||, &&, ==, !=, +
 func (p *Parser) parseExpr() Expr {
+	return p.parseTernary()
+}
+
+// parseTernary parses ternary conditional: cond ? true_expr : false_expr
+func (p *Parser) parseTernary() Expr {
+	startPos := p.cur.Pos
+	expr := p.parseLogicalOr()
+
+	if p.peek.Type == QUESTION {
+		p.nextToken() // consume '?'
+		p.nextToken()
+		trueExpr := p.parseExpr()
+		if p.peek.Type != COLON {
+			p.addError("expected ':' in ternary expression", p.peek.Pos)
+			return expr
+		}
+		p.nextToken() // consume ':'
+		p.nextToken()
+		falseExpr := p.parseExpr()
+		return &TernaryExpr{
+			Cond:      expr,
+			TrueExpr:  trueExpr,
+			FalseExpr: falseExpr,
+			PosInfo:   startPos,
+		}
+	}
+
+	return expr
+}
+
+// parseLogicalOr parses logical OR: expr || expr
+func (p *Parser) parseLogicalOr() Expr {
+	left := p.parseLogicalAnd()
+
+	for p.peek.Type == PIPEPIPE {
+		opPos := p.peek.Pos
+		p.nextToken() // consume '||'
+		p.nextToken()
+		right := p.parseLogicalAnd()
+		left = &BinaryExpr{
+			Left:    left,
+			Op:      OpOr,
+			Right:   right,
+			PosInfo: opPos,
+		}
+	}
+
+	return left
+}
+
+// parseLogicalAnd parses logical AND: expr && expr
+func (p *Parser) parseLogicalAnd() Expr {
+	left := p.parseEquality()
+
+	for p.peek.Type == AMPAMP {
+		opPos := p.peek.Pos
+		p.nextToken() // consume '&&'
+		p.nextToken()
+		right := p.parseEquality()
+		left = &BinaryExpr{
+			Left:    left,
+			Op:      OpAnd,
+			Right:   right,
+			PosInfo: opPos,
+		}
+	}
+
+	return left
+}
+
+// parseEquality parses equality: expr == expr, expr != expr
+func (p *Parser) parseEquality() Expr {
+	left := p.parseConcat()
+
+	if p.peek.Type == EQEQ || p.peek.Type == BANGEQ {
+		opPos := p.peek.Pos
+		opType := p.peek.Type
+		p.nextToken() // consume '==' or '!='
+		p.nextToken()
+		right := p.parseConcat()
+
+		op := OpEq
+		if opType == BANGEQ {
+			op = OpNeq
+		}
+
+		return &BinaryExpr{
+			Left:    left,
+			Op:      op,
+			Right:   right,
+			PosInfo: opPos,
+		}
+	}
+
+	return left
+}
+
+// parseConcat parses string concatenation: expr + expr + ...
+func (p *Parser) parseConcat() Expr {
+	left := p.parsePrimary()
+
+	for p.peek.Type == PLUS {
+		opPos := p.peek.Pos
+		p.nextToken() // consume '+'
+		p.nextToken()
+		right := p.parsePrimary()
+		left = &BinaryExpr{
+			Left:    left,
+			Op:      OpAdd,
+			Right:   right,
+			PosInfo: opPos,
+		}
+	}
+
+	return left
+}
+
+// parsePrimary parses primary expressions: literals, identifiers, lists
+func (p *Parser) parsePrimary() Expr {
 	tok := p.cur
 	switch tok.Type {
 	case STRING:

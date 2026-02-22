@@ -1,0 +1,12 @@
+target "local" {
+  address = "localhost"
+}
+
+let path = "a" + "b" + "c"
+
+node "test" {
+  type = file.sync
+  targets = [local]
+  src = "./src"
+  dest = path
+}

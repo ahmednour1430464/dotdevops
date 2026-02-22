@@ -1,0 +1,15 @@
+target "local" {
+  address = "localhost"
+}
+
+let is_prod = false
+let is_dev = true
+let should_deploy = is_dev && is_prod
+let can_deploy = is_dev || is_prod
+
+node "check" {
+  type = process.exec
+  targets = [local]
+  cmd = ["echo", "ready"]
+  cwd = "/tmp"
+}

@@ -1,0 +1,16 @@
+target "local" {
+  address = "localhost"
+}
+
+let env = "dev"
+let is_prod = env == "prod"
+let is_dev = env != "prod"
+let mode = is_prod ? "production" : "development"
+let dest_dir = is_prod ? "/var/www/prod" : "/var/www/dev"
+
+node "deploy" {
+  type = file.sync
+  targets = [local]
+  src = "./build"
+  dest = dest_dir
+}

@@ -1,0 +1,42 @@
+target "local" {
+  address = "127.0.0.1:7700"
+}
+
+node "node_a" {
+  type    = process.exec
+  targets = [local]
+
+  cmd = ["echo", "Node A Reconciled"]
+  cwd = "/tmp"
+}
+
+node "node_b" {
+  type        = process.exec
+  targets     = [local]
+  depends_on  = ["node_a"]
+
+  cmd = ["echo", "Node B"]
+  cwd = "/tmp"
+}
+
+node "node_c" {
+  type        = process.exec
+  targets     = [local]
+  depends_on  = ["node_b"]
+
+  cmd = [
+    "sh",
+    "-c",
+    "if [ -f /tmp/fail_c ]; then echo 'Fails'; exit 1; else echo 'Succeeds'; fi",
+  ]
+  cwd = "/tmp"
+}
+
+node "node_d" {
+  type        = process.exec
+  targets     = [local]
+  depends_on  = ["node_c"]
+
+  cmd = ["echo", "Node D"]
+  cwd = "/tmp"
+}

@@ -1,0 +1,12 @@
+target "local" {
+  address = "localhost"
+}
+
+let x = unknown_var + "test"
+
+node "test" {
+  type = process.exec
+  targets = [local]
+  cmd = ["echo", "test"]
+  cwd = "/tmp"
+}

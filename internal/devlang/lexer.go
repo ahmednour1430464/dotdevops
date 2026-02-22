@@ -29,6 +29,13 @@ const (
 	LBRACKET  // [
 	RBRACKET  // ]
 	COMMA     // ,
+	PLUS      // +
+	AMPAMP    // &&
+	PIPEPIPE  // ||
+	EQEQ      // ==
+	BANGEQ    // !=
+	QUESTION  // ?
+	COLON     // :
 )
 
 // Token represents a single lexical token.
@@ -82,10 +89,45 @@ func (l *Lexer) NextToken() Token {
 		return Token{Type: RBRACKET, Lexeme: "]", Pos: startPos}
 	case '=':
 		l.advance()
+		// Check for ==
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Type: EQEQ, Lexeme: "==", Pos: startPos}
+		}
 		return Token{Type: EQUAL, Lexeme: "=", Pos: startPos}
 	case ',':
 		l.advance()
 		return Token{Type: COMMA, Lexeme: ",", Pos: startPos}
+	case '+':
+		l.advance()
+		return Token{Type: PLUS, Lexeme: "+", Pos: startPos}
+	case '?':
+		l.advance()
+		return Token{Type: QUESTION, Lexeme: "?", Pos: startPos}
+	case ':':
+		l.advance()
+		return Token{Type: COLON, Lexeme: ":", Pos: startPos}
+	case '&':
+		l.advance()
+		if l.peek() == '&' {
+			l.advance()
+			return Token{Type: AMPAMP, Lexeme: "&&", Pos: startPos}
+		}
+		return Token{Type: ILLEGAL, Lexeme: "&", Pos: startPos}
+	case '|':
+		l.advance()
+		if l.peek() == '|' {
+			l.advance()
+			return Token{Type: PIPEPIPE, Lexeme: "||", Pos: startPos}
+		}
+		return Token{Type: ILLEGAL, Lexeme: "|", Pos: startPos}
+	case '!':
+		l.advance()
+		if l.peek() == '=' {
+			l.advance()
+			return Token{Type: BANGEQ, Lexeme: "!=", Pos: startPos}
+		}
+		return Token{Type: ILLEGAL, Lexeme: "!", Pos: startPos}
 	case '"':
 		return l.readString()
 	}

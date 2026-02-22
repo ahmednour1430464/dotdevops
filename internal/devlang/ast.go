@@ -123,3 +123,36 @@ type ListLiteral struct {
 
 func (e *ListLiteral) Pos() Position { return e.PosInfo }
 func (e *ListLiteral) exprNode()     {}
+
+// BinaryOp represents a binary operator.
+type BinaryOp int
+
+const (
+	OpAdd BinaryOp = iota // +
+	OpAnd                 // &&
+	OpOr                  // ||
+	OpEq                  // ==
+	OpNeq                 // !=
+)
+
+// BinaryExpr represents binary operations: +, &&, ||, ==, !=
+type BinaryExpr struct {
+	Left    Expr
+	Op      BinaryOp
+	Right   Expr
+	PosInfo Position
+}
+
+func (e *BinaryExpr) Pos() Position { return e.PosInfo }
+func (e *BinaryExpr) exprNode()     {}
+
+// TernaryExpr represents conditional: cond ? true_expr : false_expr
+type TernaryExpr struct {
+	Cond      Expr
+	TrueExpr  Expr
+	FalseExpr Expr
+	PosInfo   Position
+}
+
+func (e *TernaryExpr) Pos() Position { return e.PosInfo }
+func (e *TernaryExpr) exprNode()     {}

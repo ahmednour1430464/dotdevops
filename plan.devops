@@ -1,0 +1,19 @@
+target "local" {
+  address = "127.0.0.1:7700"
+}
+
+node "test-sync" {
+  type    = file.sync
+  targets = [local]
+
+  src  = "./testsrc"
+  dest = "/tmp/testdest"
+}
+
+node "test-exec" {
+  type    = process.exec
+  targets = [local]
+
+  cmd = ["go", "version"]
+  cwd = "/tmp"
+}
