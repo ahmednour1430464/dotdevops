@@ -51,7 +51,7 @@ devopsctl is a powerful infrastructure-as-code tool that compiles high-level `.d
 
 ```bash
 # Clone the repository
-git clone https://github.com/ahmednour1430464/devopsctl.git
+git clone https://github.com/ahmednour1430464/dotdevops.git
 cd devopsctl
 
 # Build the binary
