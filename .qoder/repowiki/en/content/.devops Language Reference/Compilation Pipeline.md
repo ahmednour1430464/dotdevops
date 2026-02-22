@@ -19,18 +19,23 @@
 - [ternary.devops](file://tests/v0_3/valid/ternary.devops)
 - [type_mismatch.devops](file://tests/v0_3/invalid/type_mismatch.devops)
 - [unresolved_var.devops](file://tests/v0_3/invalid/unresolved_var.devops)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops)
+- [step_undefined.devops](file://tests/v0_4/invalid/step_undefined.devops)
+- [step_unknown_primitive.devops](file://tests/v0_4/invalid/step_unknown_primitive.devops)
 - [plan.devops](file://plan.devops)
 - [plan.json](file://plan.json)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive language version 0.3 support with new ValidateV0_3 function and enhanced compilation workflow
-- Introduced advanced type checking system with compile-time type inference and validation
-- Implemented sophisticated expression evaluation engine with constant folding capabilities
-- Enhanced compilation pipeline with three-stage validation: construct rejection, type checking, and expression evaluation
-- Updated CLI integration with v0.3 as default language version and new evaluation engine
-- Added extensive test coverage for new 0.3 expression features including string concatenation, boolean logic, equality comparisons, and ternary expressions
+- Added comprehensive language version 0.4 support with reusable steps, step expansion, and enhanced validation logic
+- Introduced StepDecl type and validation rules for step definitions and usage
+- Implemented LowerToPlanV0_4 function for macro-style step expansion during compilation
+- Enhanced compilation pipeline with four-stage validation: construct rejection, type checking, step validation, and expression evaluation
+- Updated CLI integration with v0.4 support and new compilation workflow
+- Added extensive test coverage for step features including basic steps, comprehensive scenarios, and error conditions
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -46,10 +51,10 @@
 11. [Appendices](#appendices)
 
 ## Introduction
-This document explains the .devops language compilation pipeline in four phases: lexical analysis (lexer), parsing (parser), abstract syntax tree construction (AST), and lowering to JSON plan format. The pipeline now supports three language versions: v0.1 (legacy), v0.2 (enhanced), and v0.3 (advanced). Version 0.3 introduces comprehensive expression support with type checking, compile-time constant folding, and sophisticated evaluation capabilities. It describes how source bytes are transformed into executable JSON plans, intermediate representations at each stage, error handling strategies, and the transformation rules from language constructs to plan nodes. Examples demonstrate how high-level constructs evolve into low-level execution instructions across all three language versions.
+This document explains the .devops language compilation pipeline in four phases: lexical analysis (lexer), parsing (parser), abstract syntax tree construction (AST), and lowering to JSON plan format. The pipeline now supports four language versions: v0.1 (legacy), v0.2 (enhanced), v0.3 (advanced), and v0.4 (reusable steps). Version 0.4 introduces comprehensive step reusability with macro-style expansion, enhanced validation logic, and sophisticated compilation workflows. It describes how source bytes are transformed into executable JSON plans, intermediate representations at each stage, error handling strategies, and the transformation rules from language constructs to plan nodes. Examples demonstrate how high-level constructs evolve into low-level execution instructions across all four language versions.
 
 ## Project Structure
-The compilation pipeline lives under internal/devlang and integrates with the plan schema in internal/plan. The CLI in cmd/devopsctl invokes the compiler and orchestrates plan validation and execution. The enhanced pipeline now supports v0.1, v0.2, and v0.3 language versions with distinct validation and lowering workflows, each with progressively sophisticated semantic analysis capabilities.
+The compilation pipeline lives under internal/devlang and integrates with the plan schema in internal/plan. The CLI in cmd/devopsctl invokes the compiler and orchestrates plan validation and execution. The enhanced pipeline now supports v0.1, v0.2, v0.3, and v0.4 language versions with progressively sophisticated semantic analysis capabilities, each with distinct validation and lowering workflows.
 
 ```mermaid
 graph TB
@@ -63,8 +68,10 @@ A["internal/devlang/ast.go"]
 V1["internal/devlang/validate.go (v0.1)"]
 V2["internal/devlang/validate.go (v0.2)"]
 V3["internal/devlang/validate.go (v0.3)"]
+V4["internal/devlang/validate.go (v0.4)"]
 W1["internal/devlang/lower.go (v0.1)"]
 W2["internal/devlang/lower.go (v0.2)"]
+W4["internal/devlang/lower.go (v0.4)"]
 E["internal/devlang/eval.go"]
 T["internal/devlang/types.go"]
 END["internal/devlang/compile_test.go"]
@@ -79,19 +86,26 @@ end
 M --> V1
 M --> V2
 M --> V3
+M --> V4
 V1 --> L
 V2 --> L
 V3 --> L
+V4 --> L
 V1 --> P
 V2 --> P
 V3 --> P
+V4 --> P
 V1 --> W1
 V2 --> W2
 V3 --> W2
+V4 --> W4
 W1 --> S
 W2 --> S
+W4 --> S
 E --> V3
+E --> V4
 T --> V3
+T --> V4
 S --> PV
 S --> PE
 ```
@@ -100,11 +114,13 @@ S --> PE
 - [main.go](file://cmd/devopsctl/main.go#L54-L63)
 - [lexer.go](file://internal/devlang/lexer.go#L42-L100)
 - [parser.go](file://internal/devlang/parser.go#L27-L39)
-- [ast.go](file://internal/devlang/ast.go#L14-L126)
+- [ast.go](file://internal/devlang/ast.go#L14-L159)
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [schema.go](file://internal/plan/schema.go#L11-L39)
@@ -115,11 +131,13 @@ S --> PE
 - [main.go](file://cmd/devopsctl/main.go#L54-L63)
 - [lexer.go](file://internal/devlang/lexer.go#L42-L100)
 - [parser.go](file://internal/devlang/parser.go#L27-L39)
-- [ast.go](file://internal/devlang/ast.go#L14-L126)
+- [ast.go](file://internal/devlang/ast.go#L14-L159)
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [schema.go](file://internal/plan/schema.go#L11-L39)
@@ -133,26 +151,30 @@ S --> PE
 - **Validator (v0.1)**: Enforces legacy language-level semantics (rejects unsupported constructs, validates targets/nodes uniqueness, checks primitive types and attributes).
 - **Validator (v0.2)**: Enhanced validation with comprehensive let binding support, expanded construct acceptance, and improved semantic checks.
 - **Validator (v0.3)**: Advanced validation with expression support, type checking, compile-time constant folding, and sophisticated semantic analysis.
-- **Evaluator**: Performs compile-time expression evaluation and constant folding for v0.3 language version.
-- **Type System**: Provides compile-time type inference and validation for v0.3 expressions.
+- **Validator (v0.4)**: Comprehensive validation with step support, step expansion, enhanced validation rules, and sophisticated semantic analysis.
+- **Evaluator**: Performs compile-time expression evaluation and constant folding for v0.3 and v0.4 language versions.
+- **Type System**: Provides compile-time type inference and validation for v0.3 and v0.4 expressions.
 - **Lowerer (v0.1)**: Translates AST into plan.Plan IR, converting expressions to JSON-compatible values and ensuring required fields.
 - **Lowerer (v0.2)**: Enhanced lowering with let environment integration, expression resolution, and comprehensive value substitution.
+- **Lowerer (v0.4)**: Advanced lowering with step expansion, macro-style transformation, and comprehensive value substitution.
 - **Plan Schema**: Describes the JSON plan structure and validates runtime correctness.
 
 **Section sources**
 - [lexer.go](file://internal/devlang/lexer.go#L34-L100)
 - [parser.go](file://internal/devlang/parser.go#L18-L98)
-- [ast.go](file://internal/devlang/ast.go#L9-L126)
+- [ast.go](file://internal/devlang/ast.go#L9-L159)
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [schema.go](file://internal/plan/schema.go#L11-L39)
 
 ## Architecture Overview
-The compilation pipeline is invoked via the CLI with language version selection. It parses .devops source into an AST, validates it against v0.1, v0.2, or v0.3 rules depending on version, performs expression evaluation and constant folding for v0.3, lowers it to a plan.Plan with appropriate workflow, validates the plan IR, and optionally prints JSON. Version 0.3 introduces comprehensive expression support with type checking, compile-time evaluation, and sophisticated semantic validation.
+The compilation pipeline is invoked via the CLI with language version selection. It parses .devops source into an AST, validates it against v0.1, v0.2, v0.3, or v0.4 rules depending on version, performs expression evaluation and constant folding for v0.3 and v0.4, expands steps to regular nodes for v0.4, lowers it to a plan.Plan with appropriate workflow, validates the plan IR, and optionally prints JSON. Version 0.4 introduces comprehensive step support with macro-style expansion, enhanced validation, and sophisticated semantic validation.
 
 ```mermaid
 sequenceDiagram
@@ -166,7 +188,7 @@ participant EV as "Evaluator (eval.go)"
 participant LO as "Lower (lower.go)"
 participant PS as "Plan Schema (schema.go)"
 participant PV as "Plan Validate (validate.go)"
-CLI->>DL : "CompileFileV0_1/V0_2/V0_3(path, src)"
+CLI->>DL : "CompileFileV0_1/V0_2/V0_3/V0_4(path, src)"
 DL->>PR : "ParseFile(path, src)"
 PR->>LX : "NewLexer(src)"
 LX-->>PR : "Token stream"
@@ -177,6 +199,8 @@ else v0.2 validation
 DL->>DL : "ValidateV0_2(file) -> (errors, letEnv)"
 else v0.3 validation
 DL->>DL : "ValidateV0_3(file) -> (errors, evaluatedLets)"
+else v0.4 validation
+DL->>DL : "ValidateV0_4(file) -> (errors, evaluatedLets, steps)"
 end
 alt v0.1 lowering
 DL->>LO : "LowerToPlan(file)"
@@ -184,6 +208,8 @@ else v0.2 lowering
 DL->>LO : "LowerToPlanV0_2(file, letEnv)"
 else v0.3 lowering
 DL->>LO : "LowerToPlanV0_2(file, evaluatedLets)"
+else v0.4 lowering
+DL->>LO : "LowerToPlanV0_4(file, evaluatedLets, steps)"
 end
 LO->>PS : "Construct plan.Plan"
 PS-->>LO : "Plan"
@@ -198,12 +224,14 @@ DL-->>CLI : "CompileResult{Plan, RawJSON, Errors}"
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 - [lexer.go](file://internal/devlang/lexer.go#L49-L57)
 - [parser.go](file://internal/devlang/parser.go#L27-L39)
 - [ast.go](file://internal/devlang/ast.go#L14-L18)
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [schema.go](file://internal/plan/schema.go#L11-L16)
 - [validate.go](file://internal/plan/validate.go#L5-L94)
 
@@ -358,7 +386,7 @@ Expr <|.. TernaryExpr
 ```
 
 **Diagram sources**
-- [ast.go](file://internal/devlang/ast.go#L14-L126)
+- [ast.go](file://internal/devlang/ast.go#L14-L159)
 
 **Section sources**
 - [parser.go](file://internal/devlang/parser.go#L18-L98)
@@ -369,7 +397,7 @@ Expr <|.. TernaryExpr
 - [parser.go](file://internal/devlang/parser.go#L321-L413)
 - [parser.go](file://internal/devlang/parser.go#L415-L449)
 - [parser.go](file://internal/devlang/parser.go#L451-L494)
-- [ast.go](file://internal/devlang/ast.go#L9-L126)
+- [ast.go](file://internal/devlang/ast.go#L9-L159)
 
 ### AST: Intermediate Representation
 - **Root**: File with Path and Decls.
@@ -378,7 +406,7 @@ Expr <|.. TernaryExpr
 - **Position tracking**: Every node exposes Position via Pos().
 
 **Section sources**
-- [ast.go](file://internal/devlang/ast.go#L14-L126)
+- [ast.go](file://internal/devlang/ast.go#L14-L159)
 
 ### Validator (v0.1): Legacy Semantic Checks
 - **Rejects unsupported constructs**: let, for, step, module declarations with SemanticError.
@@ -501,6 +529,65 @@ Inputs --> Done
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 
+### Validator (v0.4): Comprehensive Step Support
+- **Accepts supported constructs**: let bindings with expressions, step definitions, rejects for, module with SemanticError.
+- **Four-stage validation process**:
+  1. **Construct rejection**: Validates unsupported constructs and builds initial let environment.
+  2. **Type checking**: Performs compile-time type inference and validation for all let expressions.
+  3. **Step validation**: Validates step definitions and collects step metadata.
+  4. **Expression evaluation**: Evaluates expressions to literals using constant folding.
+- **Step definition validation**:
+  - Duplicate step names detected.
+  - Step name collisions with primitive types prevented.
+  - Steps cannot specify targets or depends_on (validation enforced).
+  - Step type must be a known primitive (not another step).
+  - Step failure_policy validation.
+- **Step usage validation**:
+  - Unknown step references detected.
+  - Step type resolution (step vs primitive).
+  - Targets and depends_on validation for step-instantiated nodes.
+  - Failure_policy override capability.
+- **Advanced type system**: Supports string, bool, and string[] types with comprehensive type checking.
+- **Expression evaluation**: Handles string concatenation (+), boolean logic (&&, ||), equality comparisons (==, !=), and ternary expressions.
+- **Sophisticated error handling**: Provides detailed type mismatch, step definition, and evaluation errors with precise positioning.
+- **Enhanced symbol table building**: Tracks targets, nodes, evaluated let bindings, and step definitions.
+- **Returns accumulated errors, evaluated let environment, and step definitions**.
+
+```mermaid
+flowchart TD
+A["Start ValidateV0_4(file)"] --> Reject["Reject unsupported constructs (for, module)"]
+Reject --> Collect["Collect let bindings with expressions"]
+Collect --> TypeCheck["Type check all let expressions"]
+TypeCheck --> StepDef["Validate step definitions"]
+StepDef --> StepRules["Check duplicates, collisions, restrictions"]
+StepRules --> StepType["Validate step types (primitives only)"]
+StepType --> StepInputs["Validate step inputs"]
+StepInputs --> Eval["Evaluate expressions to literals (constant folding)"]
+Eval --> BuildTables["Build target/node/evaluated let/symbol tables"]
+BuildTables --> NodeChecks["Per-node validations with step resolution"]
+NodeChecks --> StepResolve["Resolve step vs primitive types"]
+StepResolve --> Targets["Check targets exist and are not let bindings"]
+NodeChecks --> Deps["Check depends_on nodes exist"]
+NodeChecks --> Type["Check primitive type"]
+NodeChecks --> FP["Check failure_policy"]
+NodeChecks --> Inputs["Check primitive inputs with let resolution"]
+Targets --> Done["Return (errors, evaluatedLets, steps)"]
+Deps --> Done
+Type --> Done
+FP --> Done
+Inputs --> Done
+```
+
+**Diagram sources**
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
+- [types.go](file://internal/devlang/types.go#L27-L184)
+- [eval.go](file://internal/devlang/eval.go#L5-L182)
+
+**Section sources**
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
+- [types.go](file://internal/devlang/types.go#L27-L184)
+- [eval.go](file://internal/devlang/eval.go#L5-L182)
+
 ### Evaluator: Compile-Time Expression Evaluation
 - **Responsibilities**:
   - Evaluates expressions to compile-time literals using constant folding.
@@ -603,6 +690,41 @@ Iterate --> Done["Return plan.Plan"]
 **Section sources**
 - [lower.go](file://internal/devlang/lower.go#L92-L179)
 
+### Lowerer (v0.4): Advanced Step Expansion
+- **Converts File into plan.Plan**: With Version, Targets, Nodes, let environment integration, and step expansion.
+- **For each TargetDecl**: Ensures address is present; copies ID and Address.
+- **For each NodeDecl**:
+  - Determines if node references a step or is a primitive.
+  - If step reference: clones step body as base, merges inputs (step defaults + node overrides), applies failure_policy override.
+  - If primitive: uses node as-is.
+  - Lowers Inputs by converting expressions with let resolution.
+- **Step expansion**: Macro-style transformation where step definitions are expanded into regular nodes at compile time.
+- **Enhanced expression resolution**: lowerExprV0_2 uses LetEnv for identifier substitution.
+- **Emits errors for unresolved identifiers and invalid step usage during lowering**.
+
+```mermaid
+flowchart TD
+S["LowerToPlanV0_4(file, letEnv, steps)"] --> Init["Initialize plan.Plan"]
+Init --> Targets["Process TargetDecl nodes"]
+Targets --> Nodes["Process NodeDecl nodes"]
+Nodes --> CheckStep{"Node type is step?"}
+CheckStep --> |Yes| Expand["Expand step to effective NodeDecl"]
+CheckStep --> |No| UseNode["Use NodeDecl as-is"]
+Expand --> MergeInputs["Merge step inputs with node overrides"]
+MergeInputs --> OverrideFP["Apply node failure_policy override"]
+OverrideFP --> LowerInputs["Lower Inputs expressions with let resolution"]
+UseNode --> LowerInputs
+LowerInputs --> Resolve["Resolve identifiers using LetEnv"]
+Resolve --> Append["Append Node to plan.Nodes"]
+Append --> Done["Return plan.Plan"]
+```
+
+**Diagram sources**
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
+
+**Section sources**
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
+
 ### Plan Schema and Validation
 - **Plan**: Top-level JSON with version, targets, nodes.
 - **Node**: id, type, targets, optional depends_on, optional when, optional failure_policy, inputs map.
@@ -643,10 +765,21 @@ Iterate --> Done["Return plan.Plan"]
 - **Enhanced validation**: Three-stage validation process with type checking and evaluation.
 - **CLI integration**: Default language version with sophisticated evaluation engine.
 
+### Version 0.4 (Comprehensive)
+- **Supported constructs**: target, node, let with expressions, step, file.sync, process.exec primitives.
+- **Unsupported constructs**: for, module declarations.
+- **Step support**: Comprehensive step definition and usage with macro-style expansion.
+- **Step validation**: Duplicate detection, collision prevention, restriction enforcement.
+- **Step expansion**: Macro-style transformation of step references to regular nodes.
+- **Enhanced validation**: Four-stage validation process with type checking, step validation, and evaluation.
+- **Advanced features**: Reusable steps, step inheritance, input merging, failure_policy overrides.
+- **CLI integration**: Full support for v0.4 language version with step-aware compilation.
+
 ```mermaid
 flowchart LR
 V1["v0.1 (Legacy)"] --> V2["v0.2 (Enhanced)"]
 V2 --> V3["v0.3 (Advanced)"]
+V3 --> V4["v0.4 (Comprehensive)"]
 V1 --> |"Unsupported"| L1["let bindings"]
 V1 --> |"Unsupported"| C1["for expressions"]
 V1 --> |"Unsupported"| S1["step declarations"]
@@ -661,31 +794,43 @@ V3 --> |"Evaluated"| E3["Constant folding"]
 V3 --> |"Unsupported"| C3["for expressions"]
 V3 --> |"Unsupported"| S3["step declarations"]
 V3 --> |"Unsupported"| M3["module declarations"]
+V4 --> |"Supported"| L4["let bindings with expressions"]
+V4 --> |"Type checked"| T4["Compile-time type inference"]
+V4 --> |"Evaluated"| E4["Constant folding"]
+V4 --> |"Supported"| S4["step definitions"]
+V4 --> |"Expanded"| X4["Macro-style step expansion"]
+V4 --> |"Restricted"| R4["Step usage validation"]
+V4 --> |"Unsupported"| C4["for expressions"]
+V4 --> |"Unsupported"| M4["module declarations"]
 ```
 
 **Diagram sources**
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 
 **Section sources**
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 
 ## Dependency Analysis
-- **CLI depends on devlang.CompileFileV0_1/V0_2/V0_3**: Compiles .devops to plan with language version selection.
-- **devlang.CompileFileV0_1/V0_2/V0_3**: Orchestrates lexer, parser, validator, evaluator, type checker, lowerer, and plan validation.
-- **Lowerer depends on plan schema types**: Both v0.1 and v0.2 lowerers depend on plan schema.
-- **Evaluator and Type System**: Used exclusively by v0.3 validation workflow.
+- **CLI depends on devlang.CompileFileV0_1/V0_2/V0_3/V0_4**: Compiles .devops to plan with language version selection.
+- **devlang.CompileFileV0_1/V0_2/V0_3/V0_4**: Orchestrates lexer, parser, validator, evaluator, type checker, lowerer, and plan validation.
+- **Lowerer depends on plan schema types**: v0.1, v0.2, and v0.4 lowerers depend on plan schema.
+- **Evaluator and Type System**: Used exclusively by v0.3 and v0.4 validation workflow.
+- **Step Expansion**: Used by v0.4 lowering workflow for macro-style transformation.
 - **Primitives consume plan nodes**: For execution regardless of language version.
-- **Enhanced dependencies**: v0.2 introduces LetEnv management and expression resolution; v0.3 adds type checking and expression evaluation.
+- **Enhanced dependencies**: v0.2 introduces LetEnv management and expression resolution; v0.3 adds type checking and expression evaluation; v0.4 adds step validation and expansion.
 
 ```mermaid
 graph LR
 CLI["cmd/devopsctl/main.go"] --> COMP1["devlang.CompileFileV0_1"]
 CLI --> COMP2["devlang.CompileFileV0_2"]
 CLI --> COMP3["devlang.CompileFileV0_3"]
+CLI --> COMP4["devlang.CompileFileV0_4"]
 COMP1 --> LEX["lexer.go"]
 COMP1 --> PAR["parser.go"]
 COMP1 --> VAL1["validate.go (v0.1)"]
@@ -695,24 +840,33 @@ COMP2 --> VAL2["validate.go (v0.2)"]
 COMP3 --> LEX
 COMP3 --> PAR
 COMP3 --> VAL3["validate.go (v0.3)"]
+COMP4 --> LEX
+COMP4 --> PAR
+COMP4 --> VAL4["validate.go (v0.4)"]
 VAL1 --> LOW1["lower.go (v0.1)"]
 VAL2 --> LOW2["lower.go (v0.2)"]
 VAL3 --> LOW2
+VAL4 --> LOW4["lower.go (v0.4)"]
 VAL3 --> EVAL["eval.go"]
+VAL4 --> EVAL
 VAL3 --> TYPES["types.go"]
+VAL4 --> TYPES
 LOW1 --> PLAN["plan/schema.go"]
 LOW2 --> PLAN
+LOW4 --> PLAN
 PLAN --> PVAL["plan/validate.go"]
-PLAN --> PRIM["primitive/processexec.go"]
+PLAN --> PRIM["primitive/processexec/processexec.go"]
 ```
 
 **Diagram sources**
 - [main.go](file://cmd/devopsctl/main.go#L54-L63)
 - [validate.go](file://internal/devlang/validate.go#L455-L491)
 - [validate.go](file://internal/devlang/validate.go#L679-L717)
+- [validate.go](file://internal/devlang/validate.go#L1013-L1050)
 - [lexer.go](file://internal/devlang/lexer.go#L49-L57)
 - [parser.go](file://internal/devlang/parser.go#L27-L39)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [schema.go](file://internal/plan/schema.go#L11-L39)
@@ -723,9 +877,11 @@ PLAN --> PRIM["primitive/processexec.go"]
 - [main.go](file://cmd/devopsctl/main.go#L54-L63)
 - [validate.go](file://internal/devlang/validate.go#L455-L491)
 - [validate.go](file://internal/devlang/validate.go#L679-L717)
+- [validate.go](file://internal/devlang/validate.go#L1013-L1050)
 - [lexer.go](file://internal/devlang/lexer.go#L49-L57)
 - [parser.go](file://internal/devlang/parser.go#L27-L39)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [types.go](file://internal/devlang/types.go#L27-L184)
 - [schema.go](file://internal/plan/schema.go#L11-L39)
@@ -737,14 +893,17 @@ PLAN --> PRIM["primitive/processexec.go"]
 - **Lowering**: O(N) over AST nodes and expressions; list lowering is O(E) per list.
 - **v0.2 enhancements**: Additional O(L) for let environment processing where L is number of let bindings.
 - **v0.3 enhancements**: Additional O(L) for type checking and expression evaluation where L is number of let bindings.
+- **v0.4 enhancements**: Additional O(S) for step validation and O(N) for step expansion where S is number of steps and N is number of nodes.
 - **Expression evaluation**: O(E) for each expression with recursive evaluation and identifier resolution.
 - **Type checking**: O(E) for each expression with type inference and validation.
+- **Step expansion**: O(N × I) for input merging where N is number of nodes and I is average number of inputs per step.
 - **Plan validation**: O(T + N + E) over targets, nodes, and edges (references).
 - **Recommendations**:
   - Keep .devops files modular to limit AST depth.
   - Prefer compact list literals and avoid unnecessary expressions.
   - Use let bindings judiciously to improve maintainability.
-  - Leverage constant folding in v0.3 for performance-critical expressions.
+  - Leverage constant folding in v0.3 and v0.4 for performance-critical expressions.
+  - Use steps strategically to reduce code duplication without excessive complexity.
   - Validate early to fail fast and reduce downstream work.
 
 ## Troubleshooting Guide
@@ -753,20 +912,31 @@ PLAN --> PRIM["primitive/processexec.go"]
   - let, for, step, module declarations are rejected. Remove or refactor to supported forms.
 - **Unsupported constructs in v0.2 and v0.3**:
   - for, step, module declarations are rejected. Use supported constructs or downgrade to v0.1.
+- **Unsupported constructs in v0.4**:
+  - for, module declarations are rejected. Use supported constructs or downgrade to v0.1-v0.3.
 - **Duplicate declarations**:
-  - Duplicate target, node, or let names cause SemanticError. Rename to be unique.
+  - Duplicate target, node, let, or step names cause SemanticError. Rename to be unique.
 - **Unknown references**:
-  - Using undefined target, node, or let binding triggers SemanticError. Define missing declarations.
+  - Using undefined target, node, let binding, or step triggers SemanticError. Define missing declarations.
 - **Let binding validation**:
   - Invalid let value types (non-literal expressions) cause SemanticError.
   - Let bindings cannot be used in targets; use target declarations instead.
-- **Type checking errors in v0.3**:
+- **Type checking errors in v0.3 and v0.4**:
   - Type mismatches in binary operations (e.g., string + bool) cause SemanticError.
   - Unsupported operations like list comparison trigger type errors.
   - Ternary expressions must have matching branch types.
-- **Expression evaluation errors in v0.3**:
+- **Expression evaluation errors in v0.3 and v0.4**:
   - Unresolved identifiers in expressions cause SemanticError.
   - Invalid operator usage in expressions triggers evaluation errors.
+- **Step definition errors in v0.4**:
+  - Duplicate step names cause SemanticError.
+  - Step name collisions with primitive types trigger SemanticError.
+  - Steps cannot specify targets or depends_on; use node-level instead.
+  - Unknown primitive types in step definitions cause SemanticError.
+- **Step usage errors in v0.4**:
+  - Unknown step references cause SemanticError.
+  - Step type resolution failures trigger SemanticError.
+  - Step input validation errors cause SemanticError.
 - **Primitive input requirements**:
   - file.sync requires src and dest as string literals.
   - process.exec requires cmd as non-empty list of string literals and cwd as string literal.
@@ -774,7 +944,8 @@ PLAN --> PRIM["primitive/processexec.go"]
   - failure_policy must be one of halt, continue, rollback.
 - **Lowering errors**:
   - Identifiers cannot be lowered as values in v0.1; ensure expressions resolve to literals.
-  - Unresolved identifiers in v0.2/v0.3 cause lowering errors.
+  - Unresolved identifiers in v0.2-v0.4 cause lowering errors.
+  - Invalid step usage in v0.4 causes lowering errors.
 
 **Section sources**
 - [validate.go](file://internal/devlang/validate.go#L25-L53)
@@ -784,13 +955,15 @@ PLAN --> PRIM["primitive/processexec.go"]
 - [validate.go](file://internal/devlang/validate.go#L305-L319)
 - [validate.go](file://internal/devlang/validate.go#L321-L366)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 - [types.go](file://internal/devlang/types.go#L86-L142)
 - [eval.go](file://internal/devlang/eval.go#L60-L149)
 - [lower.go](file://internal/devlang/lower.go#L67-L90)
 - [lower.go](file://internal/devlang/lower.go#L150-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 
 ## Conclusion
-The .devops compilation pipeline transforms human-readable source into structured JSON plans through four stages: lexical analysis, parsing, AST construction, and lowering. The enhanced pipeline now supports three language versions with progressively sophisticated capabilities: v0.1 provides basic constructs, v0.2 introduces let bindings with resolution, and v0.3 delivers comprehensive expression support with type checking, compile-time evaluation, and constant folding. The v0.3 pipeline represents a major advancement with its three-stage validation process, advanced type system, and powerful expression evaluation engine. Robust error reporting and validation ensure the resulting plan is executable and consistent across all language versions. The provided examples illustrate how high-level constructs map to concrete plan nodes and inputs, demonstrating the evolution from simple literals to complex evaluated expressions.
+The .devops compilation pipeline transforms human-readable source into structured JSON plans through four stages: lexical analysis, parsing, AST construction, and lowering. The enhanced pipeline now supports four language versions with progressively sophisticated capabilities: v0.1 provides basic constructs, v0.2 introduces let bindings with resolution, v0.3 delivers comprehensive expression support with type checking, compile-time evaluation, and constant folding, and v0.4 introduces reusable step support with macro-style expansion and enhanced validation. The v0.4 pipeline represents the most advanced iteration with its four-stage validation process, comprehensive step system, advanced type system, and powerful expression evaluation engine. Robust error reporting and validation ensure the resulting plan is executable and consistent across all language versions. The provided examples illustrate how high-level constructs map to concrete plan nodes and inputs, demonstrating the evolution from simple literals to complex evaluated expressions and step-expanded configurations.
 
 ## Appendices
 
@@ -820,6 +993,15 @@ The .devops compilation pipeline transforms human-readable source into structure
 - **Lowerer**: Processes evaluated let environment and generates final plan with resolved values.
 - **Plan JSON**: Contains fully evaluated constants ready for optimal execution performance.
 
+#### v0.4 Workflow with Step Expansion
+- **Source**: A .devops file with step definitions and step usage with macro-style expansion.
+- **Lexer**: Same tokenization process as previous versions.
+- **Parser**: Builds AST with StepDecl nodes alongside standard declarations.
+- **Validator**: Performs four-stage validation: construct rejection, type checking, step validation, and expression evaluation.
+- **Evaluator**: Performs compile-time constant folding for expressions in steps and nodes.
+- **Lowerer**: Expands step definitions to regular nodes, merges inputs, applies overrides, and generates final plan.
+- **Plan JSON**: Contains fully expanded nodes ready for execution with step reuse benefits.
+
 ```mermaid
 flowchart LR
 SRC[".devops source"] --> LEX["Lexer"]
@@ -829,12 +1011,15 @@ PAR --> AST["AST"]
 AST --> VAL1["Validator (v0.1)"]
 AST --> VAL2["Validator (v0.2)"]
 AST --> VAL3["Validator (v0.3)"]
+AST --> VAL4["Validator (v0.4)"]
 VAL1 --> LOW1["Lowerer (v0.1)"]
 VAL2 --> LOW2["Lowerer (v0.2)"]
-VAL3 --> EVAL["Evaluator"]
 VAL3 --> LOW2
+VAL4 --> EVAL["Evaluator"]
+VAL4 --> LOW4["Lowerer (v0.4)"]
 LOW1 --> PLAN["plan.Plan"]
 LOW2 --> PLAN
+LOW4 --> PLAN
 EVAL --> PLAN
 PLAN --> JSON["plan.json"]
 ```
@@ -843,12 +1028,14 @@ PLAN --> JSON["plan.json"]
 - [plan.devops](file://plan.devops#L1-L20)
 - [lexer.go](file://internal/devlang/lexer.go#L59-L100)
 - [parser.go](file://internal/devlang/parser.go#L27-L39)
-- [ast.go](file://internal/devlang/ast.go#L14-L126)
+- [ast.go](file://internal/devlang/ast.go#L14-L159)
 - [validate.go](file://internal/devlang/validate.go#L197-L315)
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1050)
 - [eval.go](file://internal/devlang/eval.go#L5-L182)
 - [lower.go](file://internal/devlang/lower.go#L9-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L283)
 - [schema.go](file://internal/plan/schema.go#L11-L39)
 - [plan.json](file://plan.json#L1-L25)
 
@@ -862,3 +1049,8 @@ PLAN --> JSON["plan.json"]
 - [ternary.devops](file://tests/v0_3/valid/ternary.devops#L1-L17)
 - [type_mismatch.devops](file://tests/v0_3/invalid/type_mismatch.devops#L1-L13)
 - [unresolved_var.devops](file://tests/v0_3/invalid/unresolved_var.devops#L1-L13)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops#L1-L17)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops#L1-L48)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops#L1-L23)
+- [step_undefined.devops](file://tests/v0_4/invalid/step_undefined.devops#L1-L10)
+- [step_unknown_primitive.devops](file://tests/v0_4/invalid/step_unknown_primitive.devops#L1-L15)

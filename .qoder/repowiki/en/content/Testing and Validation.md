@@ -22,15 +22,30 @@
 - [processexec.go](file://internal/primitive/processexec/processexec.go)
 - [server.go](file://internal/agent/server.go)
 - [schema.go](file://internal/plan/schema.go)
+- [test_v0_4.sh](file://test_v0_4.sh)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops)
+- [step_multiple_targets.devops](file://tests/v0_4/valid/step_multiple_targets.devops)
+- [step_override_inputs.devops](file://tests/v0_4/valid/step_override_inputs.devops)
+- [step_with_lets.devops](file://tests/v0_4/valid/step_with_lets.devops)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops)
+- [step_nested.devops](file://tests/v0_4/invalid/step_nested.devops)
+- [step_primitive_collision.devops](file://tests/v0_4/invalid/step_primitive_collision.devops)
+- [step_undefined.devops](file://tests/v0_4/invalid/step_undefined.devops)
+- [step_unknown_primitive.devops](file://tests/v0_4/invalid/step_unknown_primitive.devops)
+- [step_with_depends_on.devops](file://tests/v0_4/invalid/step_with_depends_on.devops)
+- [step_with_targets.devops](file://tests/v0_4/invalid/step_with_targets.devops)
+- [with_step.devops](file://tests/v0_4/hash_stability/with_step.devops)
+- [without_step.devops](file://tests/v0_4/hash_stability/without_step.devops)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive unit tests for DevOps language compiler and validator
-- Enhanced compilation pipeline testing with cross-format validation
-- Expanded semantic validation logic coverage for language version 0.1
-- Updated DevLang compiler section to reflect new test coverage
-- Added new compilation and validation test categories
+- Added comprehensive test suite for v0.4 language features including test_v0_4.sh
+- Documented extensive valid/invalid step scenario testing for step reuse functionality
+- Added hash stability testing for step expansion validation
+- Updated DevLang compiler section to include v0.4 validation and lower functions
+- Enhanced testing documentation with new language version coverage
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -60,6 +75,7 @@ DevOpsCtl's testing assets are organized across:
 - E2E shell scripts and plans for end-to-end validation
 - Unit tests under internal packages for plan, devlang, controller, state, and primitives
 - Primitive-specific tests for file synchronization and process execution
+- **New** v0.4 language feature test suites with comprehensive valid/invalid scenarios and hash stability testing
 
 ```mermaid
 graph TB
@@ -68,6 +84,12 @@ T1["test_e2e.sh"]
 T2["resume_test.sh"]
 P1["plan_resume.devops"]
 P2["plan_resume.json"]
+end
+subgraph "v0.4 Language Tests"
+V1["test_v0_4.sh"]
+V2["Valid Step Tests"]
+V3["Invalid Step Tests"]
+V4["Hash Stability Tests"]
 end
 subgraph "Unit Tests"
 U1["internal/plan/*_test.go"]
@@ -81,6 +103,9 @@ T1 --> U3
 T2 --> U3
 P1 --> U2
 P2 --> U1
+V1 --> V2
+V1 --> V3
+V1 --> V4
 U3 --> U4
 U3 --> U5
 U3 --> U6
@@ -91,10 +116,14 @@ U3 --> U6
 - [resume_test.sh](file://tests/e2e/resume_test.sh#L1-L81)
 - [plan_resume.devops](file://tests/e2e/plan_resume.devops#L1-L43)
 - [plan_resume.json](file://tests/e2e/plan_resume.json#L1-L36)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops#L1-L17)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops#L1-L23)
+- [with_step.devops](file://tests/v0_4/hash_stability/with_step.devops#L1-L16)
 - [plan_test.go](file://internal/plan/plan_test.go#L1-L62)
 - [compile_test.go](file://internal/devlang/compile_test.go#L1-L219)
 - [validate_test.go](file://internal/plan/validate_test.go#L1-L95)
-- [lexer.go](file://internal/devlang/lexer.go#L1-L247)
+- [lexer.go](file://internal/devlang/lexer.go#L1-L288)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
 - [ast.go](file://internal/devlang/ast.go#L1-L126)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L1-L653)
@@ -107,6 +136,7 @@ U3 --> U6
 - [resume_test.sh](file://tests/e2e/resume_test.sh#L1-L81)
 - [plan_resume.devops](file://tests/e2e/plan_resume.devops#L1-L43)
 - [plan_resume.json](file://tests/e2e/plan_resume.json#L1-L36)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
 
 ## Core Components
 - DevOps language compiler (lexer, parser, AST): Validates and lowers .devops declarations to plan nodes.
@@ -122,9 +152,10 @@ Key testing areas:
 - Controller graph execution, failure propagation, and resume/reconcile
 - Primitive diff/update/delete/mkdir behavior and rollback semantics
 - State integrity and idempotency
+- **New** v0.4 language feature testing including step reuse, validation, and hash stability
 
 **Section sources**
-- [lexer.go](file://internal/devlang/lexer.go#L1-L247)
+- [lexer.go](file://internal/devlang/lexer.go#L1-L288)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
 - [ast.go](file://internal/devlang/ast.go#L1-L126)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L1-L653)
@@ -270,7 +301,7 @@ Plan "1" --> "many" Target : "references"
 - [schema.go](file://internal/plan/schema.go#L11-L77)
 
 ### DevLang Compiler (Lexer, Parser, AST)
-**Updated** Comprehensive unit tests have been added for the DevOps language compiler and validator, providing extensive coverage for compilation pipeline, cross-format validation, and semantic validation logic for language version 0.1.
+**Updated** Comprehensive unit tests have been added for the DevOps language compiler and validator, providing extensive coverage for compilation pipeline, cross-format validation, and semantic validation logic for language versions 0.1, 0.2, and **v0.4**.
 
 Coverage includes:
 - Tokenization of keywords, identifiers, strings, booleans, and operators
@@ -280,6 +311,8 @@ Coverage includes:
 - Compilation pipeline validation from .devops to plan JSON
 - Cross-format validation ensuring .devops and JSON plans produce identical results
 - Semantic validation for language version 0.1 constraints
+- **New** v0.4 validation supporting step reuse functionality
+- **New** LowerToPlanV0_4 function for step macro expansion
 
 ```mermaid
 classDiagram
@@ -317,6 +350,12 @@ class CompileResult {
 class ValidateV0_1 {
 +ValidateV0_1(file) []error
 }
+class ValidateV0_4 {
++ValidateV0_4(file) ([]error, LetEnv, map[string]*StepDecl)
+}
+class LowerToPlanV0_4 {
++LowerToPlanV0_4(file, lets, steps) (*Plan, error)
+}
 Lexer --> Parser : "feeds tokens"
 Parser --> File : "produces"
 File --> Decl : "contains"
@@ -332,21 +371,91 @@ Expr <|.. Ident
 Expr <|.. ListLiteral
 CompileResult --> Plan
 ValidateV0_1 --> File
+ValidateV0_4 --> File
+LowerToPlanV0_4 --> File
 ```
 
 **Diagram sources**
-- [lexer.go](file://internal/devlang/lexer.go#L1-L247)
+- [lexer.go](file://internal/devlang/lexer.go#L1-L288)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
 - [ast.go](file://internal/devlang/ast.go#L1-L126)
 - [compile_test.go](file://internal/devlang/compile_test.go#L1-L219)
 - [validate.go](file://internal/devlang/validate.go#L1-L265)
+- [lower.go](file://internal/devlang/lower.go#L180-L282)
 
 **Section sources**
-- [lexer.go](file://internal/devlang/lexer.go#L1-L247)
+- [lexer.go](file://internal/devlang/lexer.go#L1-L288)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
 - [ast.go](file://internal/devlang/ast.go#L1-L126)
 - [compile_test.go](file://internal/devlang/compile_test.go#L1-L219)
 - [validate.go](file://internal/devlang/validate.go#L1-L265)
+- [lower.go](file://internal/devlang/lower.go#L180-L282)
+
+### v0.4 Language Feature Testing
+**New** The v0.4 language testing infrastructure provides comprehensive validation for step reuse functionality:
+
+#### Test Runner Infrastructure
+The `test_v0_4.sh` script automates testing of v0.4 language features:
+- Builds the devopsctl binary
+- Tests valid step scenarios (basic, comprehensive, multiple targets, input overrides, let bindings)
+- Tests invalid step scenarios (duplicates, nested steps, primitive collisions, undefined steps, unknown primitives, invalid dependencies)
+- Validates hash stability between step-based and manually expanded plans
+
+#### Valid Step Scenarios
+- **Basic step definition**: Simple file.sync step with basic usage
+- **Comprehensive step**: Multiple steps with different primitives, failure policies, and dependencies
+- **Multiple targets**: Single step reused across multiple deployment targets
+- **Input overrides**: Node-level input overrides for step-defined defaults
+- **Let bindings**: Steps using let expressions for dynamic configuration
+
+#### Invalid Step Scenarios
+- **Duplicate step names**: Prevented during semantic validation
+- **Nested steps**: Steps cannot contain other steps
+- **Primitive collisions**: Steps cannot shadow primitive types
+- **Undefined steps**: References to non-existent steps cause validation errors
+- **Unknown primitives**: Steps with invalid primitive types
+- **Invalid dependencies**: Steps with depends_on or targets in step definitions
+
+#### Hash Stability Testing
+Ensures consistent plan hashing between:
+- Step-based compilation (`with_step.devops`)
+- Manually expanded compilation (`without_step.devops`)
+
+Both should produce identical hash values, guaranteeing deterministic plan evaluation.
+
+```mermaid
+flowchart TD
+A["test_v0_4.sh"] --> B["Build devopsctl"]
+B --> C["Test Valid Cases"]
+C --> D["Test Invalid Cases"]
+D --> E["Test Hash Stability"]
+E --> F["Compare HASH1 vs HASH2"]
+F --> G{"Hashes Match?"}
+G --> |Yes| H["✓ PASS"]
+G --> |No| I["✗ FAIL"]
+```
+
+**Diagram sources**
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
+- [with_step.devops](file://tests/v0_4/hash_stability/with_step.devops#L1-L16)
+- [without_step.devops](file://tests/v0_4/hash_stability/without_step.devops#L1-L12)
+
+**Section sources**
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops#L1-L17)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops#L1-L48)
+- [step_multiple_targets.devops](file://tests/v0_4/valid/step_multiple_targets.devops#L1-L27)
+- [step_override_inputs.devops](file://tests/v0_4/valid/step_override_inputs.devops#L1-L18)
+- [step_with_lets.devops](file://tests/v0_4/valid/step_with_lets.devops#L1-L22)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops#L1-L23)
+- [step_nested.devops](file://tests/v0_4/invalid/step_nested.devops#L1-L23)
+- [step_primitive_collision.devops](file://tests/v0_4/invalid/step_primitive_collision.devops#L1-L23)
+- [step_undefined.devops](file://tests/v0_4/invalid/step_undefined.devops#L1-L10)
+- [step_unknown_primitive.devops](file://tests/v0_4/invalid/step_unknown_primitive.devops#L1-L15)
+- [step_with_depends_on.devops](file://tests/v0_4/invalid/step_with_depends_on.devops#L1-L23)
+- [step_with_targets.devops](file://tests/v0_4/invalid/step_with_targets.devops#L1-L23)
+- [with_step.devops](file://tests/v0_4/hash_stability/with_step.devops#L1-L16)
+- [without_step.devops](file://tests/v0_4/hash_stability/without_step.devops#L1-L12)
 
 ### Controller Orchestrator
 Key behaviors validated by e2e and unit tests:
@@ -429,13 +538,15 @@ ORCH --> FILESYNC["internal/primitive/filesync/*"]
 ORCH --> PROC["internal/primitive/processexec/processexec.go"]
 FILESYNC --> STATE
 PROC --> STATE
+V04["tests/v0_4/*"] --> DEVLANG
+TESTS["test_v0_4.sh"] --> DEVLANG
 ```
 
 **Diagram sources**
 - [plan_test.go](file://internal/plan/plan_test.go#L1-L62)
 - [compile_test.go](file://internal/devlang/compile_test.go#L1-L219)
 - [validate_test.go](file://internal/plan/validate_test.go#L1-L95)
-- [lexer.go](file://internal/devlang/lexer.go#L1-L247)
+- [lexer.go](file://internal/devlang/lexer.go#L1-L288)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
 - [ast.go](file://internal/devlang/ast.go#L1-L126)
 - [validate.go](file://internal/devlang/validate.go#L1-L265)
@@ -444,12 +555,13 @@ PROC --> STATE
 - [store.go](file://internal/state/store.go#L1-L226)
 - [filesync_test.go](file://internal/primitive/filesync/filesync_test.go#L1-L111)
 - [processexec.go](file://internal/primitive/processexec/processexec.go#L1-L83)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
 
 **Section sources**
 - [plan_test.go](file://internal/plan/plan_test.go#L1-L62)
 - [compile_test.go](file://internal/devlang/compile_test.go#L1-L219)
 - [validate_test.go](file://internal/plan/validate_test.go#L1-L95)
-- [lexer.go](file://internal/devlang/lexer.go#L1-L247)
+- [lexer.go](file://internal/devlang/lexer.go#L1-L288)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
 - [ast.go](file://internal/devlang/ast.go#L1-L126)
 - [validate.go](file://internal/devlang/validate.go#L1-L265)
@@ -458,6 +570,7 @@ PROC --> STATE
 - [store.go](file://internal/state/store.go#L1-L226)
 - [filesync_test.go](file://internal/primitive/filesync/filesync_test.go#L1-L111)
 - [processexec.go](file://internal/primitive/processexec/processexec.go#L1-L83)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
 
 ## Performance Considerations
 - Parallelism tuning: Adjust worker count to balance throughput and resource contention.
@@ -465,6 +578,7 @@ PROC --> STATE
 - State writes: SQLite WAL mode improves concurrency; avoid excessive small writes by batching where appropriate.
 - Failure policy impact: "continue" allows partial progress; "rollback" incurs extra round-trips for recovery.
 - Idempotency and reconciliation reduce redundant work by skipping unchanged nodes.
+- **New** Step expansion overhead: v0.4 step reuse adds compilation complexity but enables better plan organization and reuse.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -474,15 +588,26 @@ Common issues and remedies:
 - Rollback not triggered: Check that the primitive supports rollback and that rollback markers/snapshots exist.
 - State inconsistencies: Use state listing to inspect node statuses and change sets; rebuild state by re-applying plans if necessary.
 - Timeout and process failures: Review process execution logs and adjust timeouts; validate command availability and permissions.
+- **New** v0.4 step compilation errors: Verify step definitions are properly formatted, unique names are used, and step references resolve correctly.
+- **New** Hash stability issues: Ensure step-based and expanded plans are functionally equivalent; check for differences in input values or dependency ordering.
 
 **Section sources**
 - [test_e2e.sh](file://test_e2e.sh#L1-L317)
 - [resume_test.sh](file://tests/e2e/resume_test.sh#L1-L81)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L554-L583)
 - [store.go](file://internal/state/store.go#L100-L159)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
 
 ## Conclusion
-DevOpsCtl's testing framework combines robust e2e shell scripts with focused unit tests across the devlang compiler, controller orchestrator, state store, and primitive operations. The recent addition of comprehensive unit tests for the DevOps language compiler and validator significantly enhances the reliability and correctness of the compilation pipeline. Together, they validate correctness, resilience, and recoverability from failures, while enabling continuous improvement through CI-friendly scripts and deterministic assertions.
+DevOpsCtl's testing framework combines robust e2e shell scripts with focused unit tests across the devlang compiler, controller orchestrator, state store, and primitive operations. The recent addition of comprehensive unit tests for the DevOps language compiler and validator significantly enhances the reliability and correctness of the compilation pipeline. 
+
+**New additions** include a complete v0.4 language testing infrastructure with:
+- Automated test runner for step reuse functionality
+- Extensive valid/invalid scenario coverage for step definitions
+- Hash stability validation ensuring deterministic plan evaluation
+- Comprehensive error handling for step-related semantic violations
+
+These enhancements enable continuous validation of advanced language features while maintaining backward compatibility and ensuring reliable end-to-end execution workflows.
 
 ## Appendices
 
@@ -491,6 +616,7 @@ DevOpsCtl's testing framework combines robust e2e shell scripts with focused uni
 - Unit tests:
   - Plan: Add test cases for edge cases in plan validation and schema compliance.
   - DevLang: Add lexer/parser tests for new keywords or expressions, and expand semantic validation tests for language version 0.1 constraints.
+  - **New** v0.4: Add tests for step reuse scenarios, hash stability validation, and error conditions.
   - Controller: Add tests for failure policy combinations and resume conditions.
   - Primitives: Add tests for boundary conditions (large diffs, permission changes, timeouts).
 
@@ -500,31 +626,48 @@ DevOpsCtl's testing framework combines robust e2e shell scripts with focused uni
 - [validate_test.go](file://internal/plan/validate_test.go#L1-L95)
 - [filesync_test.go](file://internal/primitive/filesync/filesync_test.go#L1-L111)
 - [test_e2e.sh](file://test_e2e.sh#L1-L317)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
 
 ### Test Data Management
 - Use temporary directories for each test run to isolate state and artifacts.
 - Maintain minimal reproducible plans for regression testing.
 - Snapshot and compare state logs to assert idempotency and drift handling.
 - Leverage cross-format validation tests to ensure .devops and JSON plans produce identical results.
+- **New** v0.4 test organization: Separate valid/invalid test cases and hash stability tests for better maintainability.
 
 **Section sources**
 - [test_e2e.sh](file://test_e2e.sh#L6-L19)
 - [resume_test.sh](file://tests/e2e/resume_test.sh#L16-L52)
 - [compile_test.go](file://internal/devlang/compile_test.go#L88-L116)
+- [test_v0_4.sh](file://test_v0_4.sh#L18-L71)
 
 ### Continuous Integration Setup
 - Build the CLI in CI and run both e2e and unit tests.
 - Export and archive state database files for post-mortem analysis.
 - Gate merges on passing e2e and unit tests; consider parallelizing slow tests.
 - Include comprehensive DevOps language compiler tests in CI pipeline.
+- **New** v0.4 testing: Add test_v0_4.sh to CI pipeline for language feature validation.
 
 **Section sources**
 - [test_e2e.sh](file://test_e2e.sh#L21-L22)
 - [resume_test.sh](file://tests/e2e/resume_test.sh#L8-L9)
 - [compile_test.go](file://internal/devlang/compile_test.go#L1-L219)
+- [test_v0_4.sh](file://test_v0_4.sh#L1-L71)
 
 ### Performance, Load, and Stress Testing
 - Measure end-to-end latency across varying numbers of nodes and targets.
 - Simulate network partitions and agent unavailability to validate resilience and resume behavior.
 - Stress file synchronization with large change sets and concurrent targets.
 - Test compilation pipeline performance with complex .devops files containing multiple targets and nodes.
+- **New** v0.4 performance testing: Evaluate step expansion overhead and hash computation costs for large plans with repeated step usage.
+
+### Debugging Techniques for v0.4 Features
+- **Step compilation debugging**: Use verbose logging to trace step resolution and macro expansion.
+- **Hash stability analysis**: Compare intermediate representations between step-based and expanded compilation.
+- **Error localization**: Focus on specific step validation errors and their positions in source files.
+- **Integration testing**: Combine v0.4 tests with e2e scenarios to validate end-to-end step reuse functionality.
+
+**Section sources**
+- [test_v0_4.sh](file://test_v0_4.sh#L23-L43)
+- [lower.go](file://internal/devlang/lower.go#L217-L248)
+- [validate.go](file://internal/devlang/validate.go#L716-L717)

@@ -21,12 +21,10 @@
 
 ## Update Summary
 **Changes Made**
-- Updated all command documentation to reflect the complete CLI framework implementation
-- Added comprehensive coverage of all six primary commands (apply, reconcile, agent, state, plan, rollback)
-- Enhanced architecture diagrams to show complete system integration
-- Updated flag descriptions and parameter requirements for all commands
-- Added detailed troubleshooting guidance for all command failures
-- Expanded practical examples and usage scenarios
+- Updated apply, reconcile, and plan build commands to support v0.4 language version
+- Added v0.4 as a valid option for --lang flags alongside existing v0.1, v0.2, and v0.3 versions
+- Updated language version documentation and examples throughout CLI documentation
+- Enhanced troubleshooting guidance for v0.4 language version usage
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -49,7 +47,7 @@ This document describes the DevOpsCtl command-line interface and all available c
 - **plan**: Manage execution plans including compilation and fingerprint computation
 - **rollback**: Reverse previous executions with selective node support
 
-The CLI integrates with the execution engine, state store, agent daemon, and development language compiler to provide a robust DevOps automation platform.
+The CLI integrates with the execution engine, state store, agent daemon, and development language compiler to provide a robust DevOps automation platform. **Updated** Support for v0.4 language version adds reusable step definitions and enhanced expression support.
 
 ## Project Structure
 DevOpsCtl is organized around a CLI entry point that wires subcommands to controllers, state storage, and the agent server. The CLI delegates to specialized components for plan execution, state management, and distributed agent coordination.
@@ -67,7 +65,7 @@ CLI --> DEVLANG["DevLang Compiler<br/>.devops -> JSON (lexer/parser/lower/valida
 ```
 
 **Diagram sources**
-- [main.go](file://cmd/devopsctl/main.go#L21-L312)
+- [main.go](file://cmd/devopsctl/main.go#L21-L324)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L34-L300)
 - [schema.go](file://internal/plan/schema.go#L11-L77)
 - [store.go](file://internal/state/store.go#L33-L226)
@@ -81,7 +79,7 @@ CLI --> DEVLANG["DevLang Compiler<br/>.devops -> JSON (lexer/parser/lower/valida
 - [validate.go](file://internal/devlang/validate.go#L21-L265)
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L21-L312)
+- [main.go](file://cmd/devopsctl/main.go#L21-L324)
 
 ## Core Components
 The DevOpsCtl CLI framework consists of several interconnected components that work together to provide comprehensive DevOps automation capabilities:
@@ -90,10 +88,12 @@ The DevOpsCtl CLI framework consists of several interconnected components that w
 - **Controller Orchestrator**: Manages plan execution, concurrency control, and state transitions
 - **State Store**: Persists execution records with SQLite backend and supports resume/reconcile operations
 - **Agent Daemon**: Handles remote execution requests from the controller with streaming file transfers
-- **Development Language Compiler**: Transforms .devops source files into executable plan JSON with dual language support (v0.1 and v0.2)
+- **Development Language Compiler**: Transforms .devops source files into executable plan JSON with multi-version support (v0.1, v0.2, v0.3, and v0.4)
+
+**Updated** The development language compiler now supports four language versions with v0.4 adding reusable step definitions and enhanced expression evaluation.
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L27-L312)
+- [main.go](file://cmd/devopsctl/main.go#L27-L324)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L26-L300)
 - [store.go](file://internal/state/store.go#L33-L226)
 - [server.go](file://internal/agent/server.go#L15-L51)
@@ -146,7 +146,9 @@ devopsctl apply <plan>
 - `--dry-run`: Preview changes without applying (boolean, default: false)
 - `--parallelism`: Maximum concurrent node executions (integer, default: 10)
 - `--resume`: Safely resume execution from previous failure point (boolean, default: false)
-- `--lang`: Language version for .devops plans (string, default: "v0.2", supported: "v0.1", "v0.2")
+- `--lang`: Language version for .devops plans (string, default: "v0.3", supported: "v0.1", "v0.2", "v0.3", "v0.4")
+
+**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation.
 
 **Behavior Highlights**
 - Automatically detects file extension and compiles .devops files using DevLang compiler
@@ -158,17 +160,18 @@ devopsctl apply <plan>
 - Dry-run preview: `devopsctl apply --dry-run plan.json`
 - Parallel deployment: `devopsctl apply --parallelism 20 plan.json`
 - Resume interrupted run: `devopsctl apply --resume plan.json`
-- Compile and apply: `devopsctl apply --lang v0.1 myplan.devops`
+- Compile and apply with v0.4: `devopsctl apply --lang v0.4 myplan.devops`
 
 **Practical Examples**
 - Apply compiled plan: `devopsctl apply plan.json`
-- Apply .devops file with custom language: `devopsctl apply --lang v0.2 myplan.devops`
+- Apply .devops file with v0.4 language: `devopsctl apply --lang v0.4 myplan.devops`
 - Preview changes before production: `devopsctl apply --dry-run --parallelism 5 plan.json`
 
 **Common Scenarios**
 - Resume after transient failure: Ensure plan_hash and node_hash match latest execution
 - Conditional apply: Use node.when conditions to gate dependent nodes
 - Multi-environment deployment: Control concurrency with parallelism flag
+- **Updated** Step reuse: Leverage v0.4 step definitions for DRY deployments
 
 **Error Handling**
 - Compilation/validation errors are reported with specific line numbers
@@ -176,7 +179,7 @@ devopsctl apply <plan>
 - Resume functionality validates plan_hash and node_hash compatibility
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L27-L101)
+- [main.go](file://cmd/devopsctl/main.go#L27-L105)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L26-L300)
 - [schema.go](file://internal/plan/schema.go#L41-L77)
 - [store.go](file://internal/state/store.go#L68-L160)
@@ -196,7 +199,9 @@ devopsctl reconcile <plan>
 **Flags**
 - `--dry-run`: Preview diffs without applying (boolean, default: false)
 - `--parallelism`: Maximum concurrent node executions (integer, default: 10)
-- `--lang`: Language version for .devops plans (string, default: "v0.2", supported: "v0.1", "v0.2")
+- `--lang`: Language version for .devops plans (string, default: "v0.3", supported: "v0.1", "v0.2", "v0.3", "v0.4")
+
+**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation.
 
 **Behavior Highlights**
 - Same compile/load/validate pipeline as apply command
@@ -211,7 +216,7 @@ devopsctl reconcile <plan>
 
 **Practical Examples**
 - Reconcile infrastructure state: `devopsctl reconcile --dry-run infra-plan.json`
-- Production reconciliation: `devopsctl reconcile production-plan.json`
+- Production reconciliation with v0.4: `devopsctl reconcile --lang v0.4 production-plan.json`
 
 **Error Handling**
 - Maintains same error handling patterns as apply command
@@ -219,7 +224,7 @@ devopsctl reconcile <plan>
 - Preserves existing state for nodes that don't require changes
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L102-L172)
+- [main.go](file://cmd/devopsctl/main.go#L106-L181)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L184-L223)
 - [store.go](file://internal/state/store.go#L100-L160)
 
@@ -261,7 +266,7 @@ devopsctl agent
 - Graceful shutdown prevents orphaned connections
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L174-L185)
+- [main.go](file://cmd/devopsctl/main.go#L182-L194)
 - [server.go](file://internal/agent/server.go#L15-L51)
 - [handler.go](file://internal/agent/handler.go#L16-L51)
 
@@ -309,7 +314,7 @@ Tabular listing showing:
 - Missing state database is handled gracefully with informative messages
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L187-L218)
+- [main.go](file://cmd/devopsctl/main.go#L195-L227)
 - [store.go](file://internal/state/store.go#L38-L226)
 
 ### Command: plan
@@ -327,12 +332,14 @@ devopsctl plan <subcommand> [flags]
 
 **Flags for plan build**
 - `--output` or `-o`: Output file for compiled plan JSON (string, default: stdout)
-- `--lang`: Language version for .devops files (string, default: "v0.2", supported: "v0.1", "v0.2")
+- `--lang`: Language version for .devops files (string, default: "v0.3", supported: "v0.1", "v0.2", "v0.3", "v0.4")
+
+**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation.
 
 **Behavior Highlights**
 - `plan build`: Compiles .devops to plan JSON using DevLang compiler
 - `plan hash`: Computes SHA-256 fingerprint for plan verification
-- Supports both v0.1 and v0.2 language versions
+- Supports all language versions (v0.1, v0.2, v0.3, v0.4)
 - Validates compiled output before writing to file
 
 **Usage Patterns**
@@ -343,7 +350,7 @@ devopsctl plan <subcommand> [flags]
 **Practical Examples**
 - Compile development plan: `devopsctl plan build --output dev-plan.json development.devops`
 - Production validation: `devopsctl plan hash production-plan.json`
-- CI/CD integration: `devopsctl plan build --output plan.json $PLAN_FILE`
+- CI/CD integration with v0.4: `devopsctl plan build --lang v0.4 --output plan.json $PLAN_FILE`
 
 **Error Handling**
 - Compilation errors include specific line and column information
@@ -351,7 +358,7 @@ devopsctl plan <subcommand> [flags]
 - File I/O errors are reported with specific file paths
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L220-L284)
+- [main.go](file://cmd/devopsctl/main.go#L228-L296)
 - [validate.go](file://internal/devlang/validate.go#L228-L265)
 - [lexer.go](file://internal/devlang/lexer.go#L41-L247)
 - [parser.go](file://internal/devlang/parser.go#L27-L495)
@@ -395,13 +402,13 @@ devopsctl rollback
 - Partial rollback scenarios are handled gracefully with warnings
 
 **Section sources**
-- [main.go](file://cmd/devopsctl/main.go#L286-L305)
+- [main.go](file://cmd/devopsctl/main.go#L298-L317)
 - [orchestrator.go](file://internal/controller/orchestrator.go#L618-L652)
 - [store.go](file://internal/state/store.go#L190-L225)
 - [handler.go](file://internal/agent/handler.go#L147-L179)
 
 ## Dependency Analysis
-The CLI commands depend on the controller, state store, and agent. The controller depends on plan IR and primitives. The DevLang compiler produces plan IR from .devops with dual language support.
+The CLI commands depend on the controller, state store, and agent. The controller depends on plan IR and primitives. The DevLang compiler produces plan IR from .devops with multi-version support.
 
 ```mermaid
 graph LR
@@ -442,6 +449,7 @@ DL --> MSG["messages.go"]
 - **Streaming Transfers**: File transfers are streamed in 256KB chunks to avoid buffering entire files, optimizing memory usage during large deployments.
 - **State Store Performance**: SQLite WAL mode provides better concurrent access patterns for state queries.
 - **Agent Connection Pooling**: TCP connections are reused efficiently across multiple node operations.
+- **Language Version Performance**: v0.4 introduces step expansion optimization that reduces plan size and improves compilation performance.
 
 ## Troubleshooting Guide
 
@@ -465,7 +473,12 @@ DL --> MSG["messages.go"]
 **.devops Compilation Errors**
 - **Symptom**: Syntax errors or semantic validation failures
 - **Cause**: Language version mismatch or unsupported constructs
-- **Resolution**: Check language version compatibility (v0.1 vs v0.2), verify supported constructs, and review error line numbers
+- **Resolution**: Check language version compatibility (v0.1 vs v0.2 vs v0.3 vs v0.4), verify supported constructs, and review error line numbers
+
+**Updated** **v0.4 Language Version Issues**
+- **Symptom**: "unknown language version" or step-related validation errors
+- **Cause**: Using v0.4 features with older language versions or vice versa
+- **Resolution**: Specify correct language version with --lang flag, ensure step definitions are valid for v0.4, verify step names don't conflict with built-in primitives
 
 **Agent Connectivity Issues**
 - **Symptom**: "connect to agent" or "agent accept" errors
@@ -497,3 +510,5 @@ DL --> MSG["messages.go"]
 
 ## Conclusion
 DevOpsCtl provides a comprehensive CLI framework for authoring, validating, and executing plans against remote targets. The six primary commands (apply, reconcile, agent, state, plan, rollback) offer safe, resumable, and reconciled execution with robust distributed operation and auditing capabilities. The apply and reconcile commands provide essential safety mechanisms through dry-run previews, parallelism control, and resume functionality, while the agent and state store enable reliable distributed operation and comprehensive audit trails. The plan and state commands facilitate artifact management and execution history inspection, supporting both development workflows and production operations.
+
+**Updated** With v0.4 language version support, users can now leverage reusable step definitions, enhanced expression evaluation, and improved plan organization for complex deployment scenarios. The v0.4 version maintains backward compatibility while introducing powerful new features for scalable DevOps automation.

@@ -24,16 +24,25 @@
 - [unresolved_var.devops](file://tests/v0_3/invalid/unresolved_var.devops)
 - [expr_version.devops](file://tests/v0_3/hash_stability/expr_version.devops)
 - [literal_version.devops](file://tests/v0_3/hash_stability/literal_version.devops)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops)
+- [step_multiple_targets.devops](file://tests/v0_4/valid/step_multiple_targets.devops)
+- [step_override_inputs.devops](file://tests/v0_4/valid/step_override_inputs.devops)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops)
+- [step_primitive_collision.devops](file://tests/v0_4/invalid/step_primitive_collision.devops)
+- [step_undefined.devops](file://tests/v0_4/invalid/step_undefined.devops)
+- [step_unknown_primitive.devops](file://tests/v0_4/invalid/step_unknown_primitive.devops)
+- [step_with_depends_on.devops](file://tests/v0_4/invalid/step_with_depends_on.devops)
+- [step_with_targets.devops](file://tests/v0_4/invalid/step_with_targets.devops)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for v0.3 language validation rules and enhanced expression evaluation
-- Documented new type checking system with three distinct types (string, bool, string[])
-- Added detailed coverage of advanced expression constructs including binary operations, logical operators, equality comparisons, and ternary expressions
-- Updated validation architecture to include pre-evaluation type checking and constant folding
-- Expanded error reporting with enhanced diagnostics for expression evaluation failures
-- Added comprehensive test coverage for v0.3 language constructs including valid and invalid scenarios
+- Added comprehensive documentation for v0.4 language validation rules including step definition validation, duplicate step detection, primitive type collision prevention, and step expansion lowering rules
+- Updated validation architecture to include step collection and validation phase before node validation
+- Enhanced error reporting with detailed diagnostics for step-related validation failures
+- Added step expansion lowering rules that transform step references into concrete node definitions
+- Updated semantic validation to support reusable step definitions with input merging and override semantics
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -49,16 +58,16 @@
 11. [Appendices](#appendices)
 
 ## Introduction
-This document explains the validation rules and constraints enforced by the .devops language compiler and planner across multiple language versions, with comprehensive coverage of the new v0.3 language constructs. It covers semantic validation during compilation (type checking, scope resolution, constraint verification), the IR-level validation performed against the execution plan, and how these validations relate to runtime safety guarantees. The documentation now includes extensive coverage of v0.3 enhancements, particularly around advanced expression evaluation, type checking, and enhanced error reporting for complex expressions.
+This document explains the validation rules and constraints enforced by the .devops language compiler and planner across multiple language versions, with comprehensive coverage of the new v0.4 language constructs. It covers semantic validation during compilation (type checking, scope resolution, constraint verification), the IR-level validation performed against the execution plan, and how these validations relate to runtime safety guarantees. The documentation now includes extensive coverage of v0.4 enhancements, particularly around step definition validation, duplicate step detection, primitive type collision prevention, and step expansion lowering rules.
 
-**Updated** Enhanced with comprehensive semantic validation tests covering language versions 0.1, 0.2, and 0.3, including new features like advanced expression evaluation, type checking, and constant folding capabilities.
+**Updated** Enhanced with comprehensive semantic validation tests covering language versions 0.1, 0.2, 0.3, and 0.4, including new features like step definitions, input merging, failure policy inheritance, and macro-style step expansion.
 
 ## Project Structure
 The validation pipeline spans several layers and supports multiple language versions with progressively enhanced capabilities:
 - Lexical analysis: tokenization of .devops source into tokens.
 - Parsing: construction of an AST from tokens.
-- Semantic validation: language-version-specific checks on the AST with v0.3 adding type checking and expression evaluation.
-- Lowering: conversion of AST to an intermediate representation (IR) plan.
+- Semantic validation: language-version-specific checks on the AST with v0.4 adding step definition validation and expansion rules.
+- Lowering: conversion of AST to an intermediate representation (IR) plan with step expansion.
 - IR validation: structural and type checks on the plan.
 
 ```mermaid
@@ -69,14 +78,17 @@ PARSE["Parser<br/>AST construction"]
 SEMVAL01["Semantic Validator v0.1<br/>Legacy validation"]
 SEMVAL02["Semantic Validator v0.2<br/>Enhanced validation"]
 SEMVAL03["Semantic Validator v0.3<br/>Advanced expression validation"]
+SEMVAL04["Semantic Validator v0.4<br/>Step definition validation"]
 LOWER01["Lowerer v0.1<br/>AST -> Plan IR (no lets)"]
 LOWER02["Lowerer v0.2<br/>AST -> Plan IR (with lets)"]
 LOWER03["Lowerer v0.3<br/>AST -> Plan IR (with evaluated lets)"]
+LOWER04["Lowerer v0.4<br/>AST -> Plan IR (with step expansion)"]
 IRVAL["IR Validator<br/>Plan checks"]
 OUT["Execution Plan JSON"]
 SRC --> LEX --> PARSE --> SEMVAL01 --> LOWER01 --> IRVAL --> OUT
 PARSE --> SEMVAL02 --> LOWER02 --> IRVAL --> OUT
 PARSE --> SEMVAL03 --> LOWER03 --> IRVAL --> OUT
+PARSE --> SEMVAL04 --> LOWER04 --> IRVAL --> OUT
 ```
 
 **Diagram sources**
@@ -85,56 +97,62 @@ PARSE --> SEMVAL03 --> LOWER03 --> IRVAL --> OUT
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L196-L315)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
 - [lower.go](file://internal/devlang/lower.go#L10-L65)
 - [lower.go](file://internal/devlang/lower.go#L92-L148)
+- [lower.go](file://internal/devlang/lower.go#L180-L282)
 - [validate.go](file://internal/plan/validate.go#L7-L94)
 
 **Section sources**
 - [lexer.go](file://internal/devlang/lexer.go#L1-L247)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
-- [validate.go](file://internal/devlang/validate.go#L1-L717)
-- [lower.go](file://internal/devlang/lower.go#L1-L179)
+- [validate.go](file://internal/devlang/validate.go#L1-L1050)
+- [lower.go](file://internal/devlang/lower.go#L1-L283)
 - [validate.go](file://internal/plan/validate.go#L1-L95)
 
 ## Core Components
 - Semantic validator for language version 0.1: rejects unsupported constructs, enforces duplicate detection, validates node-level constraints, and performs primitive-specific input checks.
 - Semantic validator for language version 0.2: extends v0.1 validation with let binding support, literal type restrictions, and enhanced duplicate detection.
 - Semantic validator for language version 0.3: extends v0.2 validation with advanced expression evaluation, type checking, constant folding, and comprehensive error reporting.
+- Semantic validator for language version 0.4: extends v0.3 validation with step definition support, duplicate step detection, primitive type collision prevention, and step expansion rules.
 - IR validator: ensures plan-level correctness (presence of required fields, known targets/nodes, valid failure policies, and primitive inputs).
-- Lowerer: transforms AST into a plan with concrete values, enforcing that only supported expressions are lowered.
+- Lowerer: transforms AST into a plan with concrete values, enforcing that only supported expressions are lowered and steps are expanded to concrete nodes.
 
 Key responsibilities:
 - Language version 0.1: Reject unsupported constructs (let, for, step, module) and enforce strict validation rules.
 - Language version 0.2: Support let bindings with literal type restrictions, enhanced duplicate detection, and improved error reporting.
 - Language version 0.3: Support advanced expressions with type checking, constant folding, comprehensive error reporting, and enhanced validation.
-- Scope resolution via symbol tables for targets and nodes.
-- Constraint checks for node types, targets, depends_on, failure_policy, and primitive inputs.
+- Language version 0.4: Support step definitions with input merging, duplicate detection, primitive collision prevention, and step expansion lowering.
+- Scope resolution via symbol tables for targets, nodes, and steps.
+- Constraint checks for node types, targets, depends_on, failure_policy, primitive inputs, and step definitions.
 - IR-level checks mirroring AST-level checks to catch issues early.
 
 **Section sources**
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L196-L315)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
 - [validate.go](file://internal/plan/validate.go#L7-L94)
-- [lower.go](file://internal/devlang/lower.go#L10-L179)
+- [lower.go](file://internal/devlang/lower.go#L10-L282)
 
 ## Architecture Overview
 The validation architecture separates concerns across stages and supports multiple language versions with progressive enhancement:
 - Language-level checks occur before lowering to ensure only supported constructs are accepted.
 - IR-level checks ensure the plan is structurally sound and consistent with runtime expectations.
-- Language version 0.3 introduces advanced expression evaluation with type checking, constant folding, and comprehensive error reporting.
+- Language version 0.4 introduces step definition validation with input merging and expansion rules.
+- Step expansion lowers step references to concrete node definitions with proper input resolution.
 
 ```mermaid
 sequenceDiagram
 participant CLI as "CLI"
-participant DL as "devlang.CompileFileV0_1/V0_2/V0_3"
+participant DL as "devlang.CompileFileV0_1/V0_2/V0_3/V0_4"
 participant P as "Parser"
 participant SV as "Semantic Validator"
 participant TE as "Type Checker"
 participant EE as "Expression Evaluator"
 participant L as "Lowerer"
 participant PV as "Plan Validator"
-CLI->>DL : compile .devops (v0.1, v0.2, or v0.3)
+CLI->>DL : compile .devops (v0.1, v0.2, v0.3, or v0.4)
 DL->>P : ParseFile()
 P-->>DL : AST or parse errors
 alt v0.1
@@ -147,12 +165,21 @@ SV->>TE : typeCheckExpr() for each let
 TE-->>SV : typed expressions
 SV->>EE : evaluateExpr() for each let
 EE-->>SV : evaluated literals
+else v0.4
+DL->>SV : ValidateV0_4(AST) with LetEnv + Steps
+SV->>TE : typeCheckExpr() for each let
+TE-->>SV : typed expressions
+SV->>EE : evaluateExpr() for each let
+EE-->>SV : evaluated literals
+SV->>SV : Validate step definitions
+SV->>SV : Collect steps map
 end
-SV-->>DL : semantic errors or OK + LetEnv
+SV-->>DL : semantic errors or OK + LetEnv + Steps
 alt errors present
 DL-->>CLI : return errors
 else no errors
-DL->>L : LowerToPlan/LowerToPlanV0_2/Ast, LetEnv)
+DL->>L : LowerToPlan/LowerToPlanV0_2/LowerToPlanV0_3/LowerToPlanV0_4(AST, LetEnv, Steps)
+L->>L : Expand steps to concrete nodes
 L-->>DL : Plan IR
 DL->>PV : plan.Validate(Plan)
 PV-->>DL : plan errors or OK
@@ -171,10 +198,11 @@ end
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L196-L315)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
 - [types.go](file://internal/devlang/types.go#L27-L182)
 - [eval.go](file://internal/devlang/eval.go#L5-L181)
-- [lower.go](file://internal/devlang/lower.go#L10-L65)
-- [lower.go](file://internal/devlang/lower.go#L92-L148)
+- [lower.go](file://internal/devlang/lower.go#L10-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L282)
 - [validate.go](file://internal/plan/validate.go#L7-L94)
 
 ## Detailed Component Analysis
@@ -328,6 +356,70 @@ Key rules and diagnostics for v0.3:
 - [types.go](file://internal/devlang/types.go#L27-L182)
 - [eval.go](file://internal/devlang/eval.go#L5-L181)
 
+### Semantic Validation (Language Version 0.4)
+Semantic validation enforces the most comprehensive rules for language version 0.4:
+- Unsupported constructs are rejected (for, module) while allowing advanced let bindings and step definitions.
+- Let bindings are collected with full expression support and undergo type checking.
+- Expression evaluation performs constant folding to convert expressions to literals.
+- Step definitions are collected and validated for duplicates and primitive collisions.
+- Step validation enforces that steps cannot specify targets or depends_on and must have a valid primitive type.
+- Duplicate step detection prevents naming conflicts with primitive types and other steps.
+- Node validation supports both primitive types and step references with proper input merging.
+- Input merging allows steps to define defaults with node-level overrides.
+- Failure policy inheritance allows steps to define defaults with node-level overrides.
+
+```mermaid
+flowchart TD
+Start(["ValidateV0_4"]) --> RejectUnsupported["Reject unsupported constructs (for, module)"]
+RejectUnsupported --> CollectLets["Collect let bindings with expressions"]
+CollectLets --> TypeCheck["Type check all let expressions"]
+TypeCheck --> EvalExpr["Evaluate expressions to literals"]
+EvalExpr --> DupLets["Check duplicate let bindings"]
+DupLets --> CollectSteps["Collect step definitions"]
+CollectSteps --> ValidateSteps["Validate step definitions"]
+ValidateSteps --> DupSteps["Check duplicate step names"]
+DupSteps --> PrimitiveCollision["Check primitive type collisions"]
+PrimitiveCollision --> BuildSymbolTables["Build targets, nodes, and steps tables"]
+BuildSymbolTables --> ValidateNodes["Validate nodes with step expansion"]
+ValidateNodes --> MergeInputs["Merge step inputs with node overrides"]
+MergeInputs --> End(["Return errors + LetEnv + Steps"])
+```
+
+**Diagram sources**
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
+
+Key rules and diagnostics for v0.4:
+- Unsupported constructs: for, module are rejected with explicit messages indicating language version 0.4 limitations.
+- Advanced let bindings: support expressions including binary operations, logical operators, equality comparisons, and ternary expressions.
+- Type checking: comprehensive type inference with three distinct types (string, bool, string[]) and strict type enforcement.
+- Expression evaluation: constant folding converts expressions to concrete literals at compile time.
+- Step definition validation:
+  - Steps cannot specify targets or depends_on (these belong to node instantiations)
+  - Steps must have a valid primitive type (not another step)
+  - Step names cannot collide with primitive types
+  - Duplicate step names are rejected
+- Input merging and override semantics:
+  - Steps define default inputs that nodes can override
+  - Node-level inputs take precedence over step defaults
+  - Failure policy can be inherited from step or overridden by node
+- Duplicate detection: duplicate let, target, node, or step names produce errors with precise positions.
+- Let binding restrictions: let bindings cannot be used in targets; targets must reference target declarations.
+- Unknown references: unresolved identifiers in expressions or unknown step types produce detailed error messages.
+- Primitive types: only allowed primitives are accepted; others produce errors.
+- Failure policy: must be one of halt, continue, rollback; otherwise error.
+- Primitive inputs:
+  - file.sync requires src and dest as string literals.
+  - process.exec requires cmd as a non-empty list of string literals and cwd as a string literal.
+
+**Section sources**
+- [validate.go](file://internal/devlang/validate.go#L717-L744)
+- [validate.go](file://internal/devlang/validate.go#L751-L781)
+- [validate.go](file://internal/devlang/validate.go#L787-L802)
+- [validate.go](file://internal/devlang/validate.go#L804-L894)
+- [validate.go](file://internal/devlang/validate.go#L900-L1008)
+- [types.go](file://internal/devlang/types.go#L27-L182)
+- [eval.go](file://internal/devlang/eval.go#L5-L181)
+
 ### Type System and Expression Evaluation
 The v0.3 type system introduces a comprehensive type checking framework:
 
@@ -417,15 +509,27 @@ Lowering converts AST expressions into concrete values for the plan with differe
 - Identifiers are resolved using the evaluated let environment.
 - Complex expressions are evaluated to their final literal values.
 
+**Language Version 0.4 Lowering:**
+- String literals, boolean literals, and list literals are preserved.
+- All let expressions are fully evaluated to concrete literals through constant folding.
+- Identifiers are resolved using the evaluated let environment.
+- Complex expressions are evaluated to their final literal values.
+- Step expansion transforms step references into concrete node definitions with merged inputs and proper failure policy inheritance.
+
 ```mermaid
 flowchart TD
-LStart(["LowerToPlan/LowerToPlanV0_2/LowerToPlanV0_3"]) --> Collect["Collect targets and nodes"]
+LStart(["LowerToPlan/LowerToPlanV0_2/LowerToPlanV0_3/LowerToPlanV0_4"]) --> Collect["Collect targets and nodes"]
 Collect --> ForEachNode["For each NodeDecl"]
-ForEachNode --> LowerInputs["Lower inputs with let resolution"]
+ForEachNode --> CheckStepRef{"References Step?"}
+CheckStepRef --> |Yes| ExpandStep["Expand step to concrete node"]
+ExpandStep --> MergeInputs["Merge step defaults + node overrides"]
+MergeInputs --> LowerInputs["Lower inputs with let resolution"]
+CheckStepRef --> |No| LowerInputs
 LowerInputs --> EvalCheck{"Expression Evaluation?"}
 EvalCheck --> |v0.1| IdentError["Return internal error"]
 EvalCheck --> |v0.2| ResolveLet["Resolve with LetEnv"]
 EvalCheck --> |v0.3| EvalLet["Evaluate with Type Checker + Evaluator"]
+EvalCheck --> |v0.4| EvalLet
 EvalLet --> AppendNode["Append node to plan"]
 ResolveLet --> AppendNode
 IdentError --> LEnd(["Done"])
@@ -436,14 +540,69 @@ AppendNode --> LEnd
 - [lower.go](file://internal/devlang/lower.go#L10-L65)
 - [lower.go](file://internal/devlang/lower.go#L92-L148)
 - [lower.go](file://internal/devlang/lower.go#L150-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L282)
 - [validate.go](file://internal/devlang/validate.go#L563-L572)
 - [validate.go](file://internal/devlang/validate.go#L691)
+- [validate.go](file://internal/devlang/validate.go#L1025)
 
 **Section sources**
 - [lower.go](file://internal/devlang/lower.go#L10-L91)
 - [lower.go](file://internal/devlang/lower.go#L92-L179)
+- [lower.go](file://internal/devlang/lower.go#L180-L282)
 - [validate.go](file://internal/devlang/validate.go#L563-L572)
 - [validate.go](file://internal/devlang/validate.go#L691)
+- [validate.go](file://internal/devlang/validate.go#L1025)
+
+### Step Definition Validation and Expansion
+Language version 0.4 introduces comprehensive step definition validation and expansion rules:
+
+**Step Definition Validation Rules:**
+- Steps cannot specify targets (targets belong to node instantiations)
+- Steps cannot specify depends_on (graph structure belongs to nodes)
+- Steps must have a valid primitive type (not another step)
+- Step names cannot collide with primitive types
+- Duplicate step names are rejected
+- Step failure_policy is optional and inherited by nodes
+
+**Step Expansion Lowering Rules:**
+- When a node references a step, it's expanded to a concrete node
+- Step defaults are cloned as base inputs
+- Node inputs override step defaults
+- Node can override step failure_policy
+- Node retains its own targets and depends_on
+
+**Input Merging Semantics:**
+- Step defines default inputs
+- Node can override any input
+- Node inputs take precedence over step defaults
+- Failure policy can be inherited or overridden
+
+```mermaid
+flowchart TD
+StepDef["Step Definition"] --> ValidateStep["Validate Step Rules"]
+ValidateStep --> CheckTargets{"Has targets?"}
+CheckTargets --> |Yes| ErrTargets["Error: steps cannot specify targets"]
+CheckTargets --> |No| CheckDeps{"Has depends_on?"}
+CheckDeps --> |Yes| ErrDeps["Error: steps cannot specify depends_on"]
+CheckDeps --> |No| CheckType{"Valid primitive type?"}
+CheckType --> |No| ErrType["Error: unknown primitive type"]
+CheckType --> |Yes| CheckDup{"Duplicate step name?"}
+CheckDup --> |Yes| ErrDup["Error: duplicate step name"]
+CheckDup --> |No| StoreStep["Store step in steps map"]
+NodeRef["Node Reference to Step"] --> ExpandNode["Expand to Concrete Node"]
+ExpandNode --> CloneDefaults["Clone step body as defaults"]
+CloneDefaults --> MergeInputs["Merge step defaults + node overrides"]
+MergeInputs --> OverrideFP["Apply node failure_policy override"]
+OverrideFP --> LowerNode["Lower expanded node"]
+```
+
+**Diagram sources**
+- [validate.go](file://internal/devlang/validate.go#L804-L894)
+- [lower.go](file://internal/devlang/lower.go#L217-L248)
+
+**Section sources**
+- [validate.go](file://internal/devlang/validate.go#L804-L894)
+- [lower.go](file://internal/devlang/lower.go#L217-L248)
 
 ### Example Constructs: Valid vs Invalid
 Valid constructs:
@@ -453,9 +612,10 @@ Valid constructs:
 - Nodes with failure_policy set to one of halt, continue, rollback.
 - **Language Version 0.2**: Let bindings with string, bool, or list of string literal values.
 - **Language Version 0.3**: Advanced expressions including string concatenation, logical operations, equality comparisons, and ternary expressions with proper type checking.
+- **Language Version 0.4**: Step definitions with proper primitive types, input merging with node overrides, and step expansion to concrete nodes.
 
 Invalid constructs:
-- Using unsupported constructs (for, step, module) in v0.1, v0.2, or v0.3.
+- Using unsupported constructs (for, step, module) in v0.1, v0.2, v0.3, or v0.4.
 - Duplicate target, node, or let bindings.
 - Referencing unknown targets or nodes in depends_on.
 - Using an unknown primitive type.
@@ -463,12 +623,14 @@ Invalid constructs:
 - Setting failure_policy to an invalid value.
 - **Language Version 0.2**: Using identifiers in targets or let bindings with non-literal values.
 - **Language Version 0.3**: Type mismatches in expressions, unresolved identifiers, and unsupported expression types.
+- **Language Version 0.4**: Steps with invalid constructs (targets, depends_on), unknown step types, duplicate step names, primitive type collisions, and undefined step references.
 
 Examples in the repository:
 - Valid plan examples demonstrate correct usage of targets and nodes with primitives.
 - An end-to-end plan with depends_on illustrates ordering and dependency validation.
 - **Language Version 0.2**: Examples show let bindings with string and list literal values.
 - **Language Version 0.3**: Comprehensive examples demonstrate advanced expressions, type checking, and constant folding.
+- **Language Version 0.4**: Comprehensive examples demonstrate step definitions, input merging, failure policy inheritance, and step expansion.
 
 **Section sources**
 - [plan.devops](file://plan.devops#L1-L20)
@@ -478,11 +640,15 @@ Examples in the repository:
 - [concat.devops](file://tests/v0_3/valid/concat.devops#L1-L15)
 - [logical.devops](file://tests/v0_3/valid/logical.devops#L1-L16)
 - [ternary.devops](file://tests/v0_3/valid/ternary.devops#L1-L17)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops#L1-L17)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops#L1-L48)
+- [step_multiple_targets.devops](file://tests/v0_4/valid/step_multiple_targets.devops#L1-L27)
+- [step_override_inputs.devops](file://tests/v0_4/valid/step_override_inputs.devops#L1-L18)
 
 ## Comprehensive Validation Tests
 
 ### Test Coverage Overview
-The validation system includes comprehensive test coverage for all language versions with enhanced coverage for v0.3:
+The validation system includes comprehensive test coverage for all language versions with enhanced coverage for v0.4:
 
 #### Language Version 0.1 Test Coverage
 - Unknown target detection
@@ -505,11 +671,22 @@ The validation system includes comprehensive test coverage for all language vers
 - Unresolved identifier handling
 - Hash stability testing for expression evaluation
 
+#### Language Version 0.4 Test Coverage
+- Step definition validation testing
+- Duplicate step detection
+- Primitive type collision prevention
+- Step expansion lowering rules
+- Input merging and override semantics
+- Failure policy inheritance
+- Step reference resolution
+- Comprehensive error reporting for step-related failures
+
 ```mermaid
 flowchart TD
 TestSuite["Validation Test Suite"] --> V01Tests["v0.1 Tests"]
 TestSuite --> V02Tests["v0.2 Tests"]
 TestSuite --> V03Tests["v0.3 Tests"]
+TestSuite --> V04Tests["v0.4 Tests"]
 V01Tests --> UnknownTarget["Unknown Target Tests"]
 V01Tests --> DuplicateNode["Duplicate Node Tests"]
 V01Tests --> InvalidPolicy["Invalid Failure Policy Tests"]
@@ -523,6 +700,13 @@ V03Tests --> TypeChecking["Type Checking Tests"]
 V03Tests --> ConstFolding["Constant Folding Tests"]
 V03Tests --> ErrorReporting["Error Reporting Tests"]
 V03Tests --> HashStability["Hash Stability Tests"]
+V04Tests --> StepDefs["Step Definition Tests"]
+V04Tests --> DuplicateStep["Duplicate Step Tests"]
+V04Tests --> PrimitiveCollision["Primitive Collision Tests"]
+V04Tests --> StepExpansion["Step Expansion Tests"]
+V04Tests --> InputMerging["Input Merging Tests"]
+V04Tests --> FailurePolicyInherit["Failure Policy Inheritance Tests"]
+V04Tests --> StepResolution["Step Resolution Tests"]
 UnknownTarget --> UTExpected["Expected 'unknown target' errors"]
 DuplicateNode --> DNExpected["Expected 'duplicate node' errors"]
 InvalidPolicy --> IPExpected["Expected 'invalid failure_policy' errors"]
@@ -536,6 +720,13 @@ TypeChecking --> TCExpected["Expected type checking"]
 ConstFolding --> CFExpected["Expected constant folding"]
 ErrorReporting --> ERExpected["Expected detailed error messages"]
 HashStability --> HSExpected["Expected stable hash values"]
+StepDefs --> SDExpected["Expected step definition validation"]
+DuplicateStep --> DSExpected["Expected 'duplicate step' errors"]
+PrimitiveCollision --> PCExpected["Expected 'conflicts with built-in primitive' errors"]
+StepExpansion --> SEExpected["Expected step expansion behavior"]
+InputMerging --> IMExpected["Expected input merging semantics"]
+FailurePolicyInherit --> FPIExpected["Expected failure policy inheritance"]
+StepResolution --> SRExpected["Expected step reference resolution"]
 ```
 
 **Diagram sources**
@@ -570,6 +761,17 @@ The v0.3 test suite provides comprehensive coverage:
 - **Error reporting**: Provides detailed error messages for type mismatches, unresolved identifiers, and unsupported operations.
 - **Hash stability testing**: Verifies that expression evaluation produces consistent hash values across compilations.
 
+#### Language Version 0.4 Test Cases
+The v0.4 test suite provides comprehensive coverage:
+- **Step definition validation**: Proper step definitions with valid primitive types and required attributes.
+- **Duplicate step detection**: Prevents naming conflicts between steps and other steps or primitives.
+- **Primitive type collision prevention**: Ensures step names don't collide with built-in primitive types.
+- **Step expansion lowering**: Transforms step references into concrete node definitions with merged inputs.
+- **Input merging and override semantics**: Allows steps to define defaults while enabling node-level overrides.
+- **Failure policy inheritance**: Enables steps to define default failure policies with node-level overrides.
+- **Step reference resolution**: Validates that all step references resolve to defined step definitions.
+- **Error reporting**: Provides detailed error messages for step-related validation failures.
+
 **Section sources**
 - [compile_test.go](file://internal/devlang/compile_test.go#L118-L429)
 - [comprehensive.devops](file://tests/v0_3/valid/comprehensive.devops#L1-L46)
@@ -580,14 +782,24 @@ The v0.3 test suite provides comprehensive coverage:
 - [unresolved_var.devops](file://tests/v0_3/invalid/unresolved_var.devops#L1-L13)
 - [expr_version.devops](file://tests/v0_3/hash_stability/expr_version.devops#L1-L13)
 - [literal_version.devops](file://tests/v0_3/hash_stability/literal_version.devops#L1-L13)
+- [step_basic.devops](file://tests/v0_4/valid/step_basic.devops#L1-L17)
+- [step_comprehensive.devops](file://tests/v0_4/valid/step_comprehensive.devops#L1-L48)
+- [step_multiple_targets.devops](file://tests/v0_4/valid/step_multiple_targets.devops#L1-L27)
+- [step_override_inputs.devops](file://tests/v0_4/valid/step_override_inputs.devops#L1-L18)
+- [step_duplicate.devops](file://tests/v0_4/invalid/step_duplicate.devops#L1-L23)
+- [step_primitive_collision.devops](file://tests/v0_4/invalid/step_primitive_collision.devops#L1-L15)
+- [step_undefined.devops](file://tests/v0_4/invalid/step_undefined.devops#L1-L10)
+- [step_unknown_primitive.devops](file://tests/v0_4/invalid/step_unknown_primitive.devops#L1-L15)
+- [step_with_depends_on.devops](file://tests/v0_4/invalid/step_with_depends_on.devops#L1-L17)
+- [step_with_targets.devops](file://tests/v0_4/invalid/step_with_targets.devops#L1-L21)
 
 ## Dependency Analysis
 The validation pipeline depends on:
 - Lexer and Parser for correct AST construction.
-- Semantic Validator (v0.1, v0.2, and v0.3) for language-version-specific checks with v0.3 adding type checking and expression evaluation.
+- Semantic Validator (v0.1, v0.2, v0.3, and v0.4) for language-version-specific checks with v0.4 adding step definition validation and expansion.
 - Type Checker (v0.3) for comprehensive type inference and validation.
 - Expression Evaluator (v0.3) for constant folding and expression resolution.
-- Lowerer (v0.1, v0.2, and v0.3) for converting AST to plan IR with enhanced let environment support.
+- Lowerer (v0.1, v0.2, v0.3, and v0.4) for converting AST to plan IR with enhanced let environment support and step expansion.
 - Plan Validator for structural correctness.
 
 ```mermaid
@@ -596,14 +808,17 @@ LEX["Lexer"] --> PARSE["Parser"]
 PARSE --> SEMVAL01["Semantic Validator v0.1"]
 PARSE --> SEMVAL02["Semantic Validator v0.2"]
 PARSE --> SEMVAL03["Semantic Validator v0.3"]
+PARSE --> SEMVAL04["Semantic Validator v0.4"]
 SEMVAL03 --> TYPECHECK["Type Checker"]
 SEMVAL03 --> EXPRVAL["Expression Evaluator"]
 SEMVAL01 --> LOWER01["Lowerer v0.1"]
 SEMVAL02 --> LOWER02["Lowerer v0.2"]
 SEMVAL03 --> LOWER03["Lowerer v0.3"]
+SEMVAL04 --> LOWER04["Lowerer v0.4"]
 LOWER01 --> IRVAL["Plan Validator"]
 LOWER02 --> IRVAL
 LOWER03 --> IRVAL
+LOWER04 --> IRVAL
 ```
 
 **Diagram sources**
@@ -612,16 +827,17 @@ LOWER03 --> IRVAL
 - [validate.go](file://internal/devlang/validate.go#L23-L194)
 - [validate.go](file://internal/devlang/validate.go#L196-L315)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
 - [types.go](file://internal/devlang/types.go#L27-L182)
 - [eval.go](file://internal/devlang/eval.go#L5-L181)
-- [lower.go](file://internal/devlang/lower.go#L10-L179)
+- [lower.go](file://internal/devlang/lower.go#L10-L282)
 - [validate.go](file://internal/plan/validate.go#L7-L94)
 
 **Section sources**
 - [lexer.go](file://internal/devlang/lexer.go#L1-L247)
 - [parser.go](file://internal/devlang/parser.go#L1-L495)
-- [validate.go](file://internal/devlang/validate.go#L1-L717)
-- [lower.go](file://internal/devlang/lower.go#L1-L179)
+- [validate.go](file://internal/devlang/validate.go#L1-L1050)
+- [lower.go](file://internal/devlang/lower.go#L1-L283)
 - [validate.go](file://internal/plan/validate.go#L1-L95)
 
 ## Performance Considerations
@@ -632,6 +848,9 @@ LOWER03 --> IRVAL
 - **Language Version 0.2**: Let environment collection uses O(n) time where n is the number of let declarations.
 - **Language Version 0.3**: Type checking and expression evaluation add computational overhead but provide compile-time safety guarantees.
 - **Language Version 0.3**: Constant folding eliminates runtime computation for expressions, improving performance at execution time.
+- **Language Version 0.4**: Step collection and validation adds O(s) time where s is the number of step definitions.
+- **Language Version 0.4**: Step expansion lowers O(n) nodes to O(n+s) nodes in the final plan, with input merging complexity proportional to input count.
+- **Language Version 0.4**: Input merging and override resolution occurs during lowering, avoiding runtime computation.
 
 ## Troubleshooting Guide
 Common validation failures and remedies:
@@ -715,6 +934,40 @@ Common validation failures and remedies:
   - Fix: Compare individual string elements instead of entire lists.
   - Reference: [types.go](file://internal/devlang/types.go#L126-L133)
 
+### Language Version 0.4 Issues
+- Unsupported construct in v0.4:
+  - Symptom: Error indicating the construct is not supported.
+  - Fix: Remove unsupported constructs (for, module) or use supported alternatives.
+  - Reference: [validate.go](file://internal/devlang/validate.go#L729-L744)
+- Duplicate let binding:
+  - Symptom: Error indicating duplicate let declaration.
+  - Fix: Rename one of the conflicting let bindings.
+  - Reference: [validate.go](file://internal/devlang/validate.go#L758-L764)
+- Step definition validation errors:
+  - Symptom: Error indicating step cannot specify targets or depends_on.
+  - Fix: Remove targets or depends_on from step definitions; define them in node instantiations.
+  - References: [validate.go](file://internal/devlang/validate.go#L833-L849)
+- Unknown step type:
+  - Symptom: Error indicating step references unknown step or primitive.
+  - Fix: Define the referenced step or use a valid primitive type.
+  - References: [validate.go](file://internal/devlang/validate.go#L861-L878)
+- Duplicate step name:
+  - Symptom: Error indicating duplicate step name.
+  - Fix: Rename one of the conflicting step definitions.
+  - Reference: [validate.go](file://internal/devlang/validate.go#L811-L818)
+- Primitive type collision:
+  - Symptom: Error indicating step name conflicts with built-in primitive.
+  - Fix: Choose a different step name that doesn't collide with primitives.
+  - Reference: [validate.go](file://internal/devlang/validate.go#L821-L828)
+- Undefined step reference:
+  - Symptom: Error indicating node references non-existent step.
+  - Fix: Define the referenced step or correct the step name.
+  - Reference: [validate.go](file://internal/devlang/validate.go#L946-L952)
+- Step expansion errors:
+  - Symptom: Error during step expansion lowering.
+  - Fix: Ensure step definitions are valid and all references resolve correctly.
+  - References: [lower.go](file://internal/devlang/lower.go#L217-L248)
+
 ### IR-level Errors
 - Missing plan fields, targets, or nodes; missing target id/address; missing node id/type/targets; unknown depends_on or when.node; invalid failure_policy; missing or invalid primitive inputs.
 - Fix: Ensure all required fields are present and valid.
@@ -723,6 +976,7 @@ Common validation failures and remedies:
 **Section sources**
 - [validate.go](file://internal/devlang/validate.go#L28-L382)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
 - [validate.go](file://internal/plan/validate.go#L7-L94)
 - [lower.go](file://internal/devlang/lower.go#L150-L179)
 - [schema.go](file://internal/plan/schema.go#L12-L39)
@@ -730,7 +984,7 @@ Common validation failures and remedies:
 - [eval.go](file://internal/devlang/eval.go#L5-L181)
 
 ## Conclusion
-The .devops language enforces strict validation at both the language and IR levels across multiple language versions. Language-level checks prevent unsupported constructs and enforce scoping and primitive constraints, while IR-level checks ensure structural correctness and consistency. The enhanced validation system now supports language version 0.3 with comprehensive expression evaluation capabilities, advanced type checking, constant folding, and improved error reporting. The comprehensive test suite provides extensive coverage for common error scenarios across all language versions, enabling developers to quickly identify and resolve validation issues. Together, these validations provide strong safety guarantees for runtime execution by catching errors early and preventing malformed plans from reaching the orchestrator.
+The .devops language enforces strict validation at both the language and IR levels across multiple language versions. Language-level checks prevent unsupported constructs and enforce scoping and primitive constraints, while IR-level checks ensure structural correctness and consistency. The enhanced validation system now supports language version 0.4 with comprehensive step definition capabilities, advanced type checking, constant folding, and improved error reporting. The comprehensive test suite provides extensive coverage for common error scenarios across all language versions, enabling developers to quickly identify and resolve validation issues. Together, these validations provide strong safety guarantees for runtime execution by catching errors early and preventing malformed plans from reaching the orchestrator.
 
 ## Appendices
 
@@ -741,11 +995,13 @@ The .devops language enforces strict validation at both the language and IR leve
 - IR validation ensures the plan is self-consistent, preventing crashes due to missing or inconsistent metadata.
 - **Language Version 0.2**: Let binding validation ensures compile-time safety for dynamic configuration values while maintaining runtime reliability.
 - **Language Version 0.3**: Advanced expression evaluation with type checking and constant folding eliminates runtime computation errors and improves performance by pre-computing values at compile time.
+- **Language Version 0.4**: Step definition validation and expansion ensures consistent behavior across node instantiations, while input merging and override semantics provide flexible configuration management without runtime overhead.
 
 **Section sources**
 - [validate.go](file://internal/devlang/validate.go#L23-L382)
 - [validate.go](file://internal/devlang/validate.go#L493-L677)
+- [validate.go](file://internal/devlang/validate.go#L717-L1011)
 - [validate.go](file://internal/plan/validate.go#L7-L94)
-- [lower.go](file://internal/devlang/lower.go#L92-L179)
+- [lower.go](file://internal/devlang/lower.go#L92-L282)
 - [types.go](file://internal/devlang/types.go#L27-L182)
 - [eval.go](file://internal/devlang/eval.go#L5-L181)
