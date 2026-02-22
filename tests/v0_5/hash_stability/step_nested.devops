@@ -1,0 +1,22 @@
+// Nested steps version - should produce same hash as manually expanded version
+
+target "prod" {
+  address = "10.0.0.10:7700"
+}
+
+step "base_deploy" {
+  type = file.sync
+  src = "./build"
+  incremental = true
+}
+
+step "service_deploy" {
+  type = base_deploy
+  dest = "/opt/services"
+}
+
+node "app_deploy" {
+  type = service_deploy
+  dest = "/opt/services/app"
+  targets = [prod]
+}

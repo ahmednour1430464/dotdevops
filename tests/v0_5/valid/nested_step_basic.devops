@@ -1,0 +1,20 @@
+// Basic nested step: step references another step
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+step "base_sync" {
+  type = file.sync
+  src = "./build"
+}
+
+step "sync_with_dest" {
+  type = base_sync
+  dest = "/var/www"
+}
+
+node "deploy" {
+  type = sync_with_dest
+  targets = [server]
+}

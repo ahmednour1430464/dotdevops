@@ -1,0 +1,20 @@
+// Basic for-loop test: compile-time loop unrolling
+
+target "server1" {
+  address = "10.0.0.1:7700"
+}
+
+target "server2" {
+  address = "10.0.0.2:7700"
+}
+
+let files = ["app.conf", "db.conf", "cache.conf"]
+
+for filename in files {
+  node "sync_${filename}" {
+    type = file.sync
+    src = "./${filename}"
+    dest = "/etc/${filename}"
+    targets = [server1]
+  }
+}

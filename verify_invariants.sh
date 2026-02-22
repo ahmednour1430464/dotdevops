@@ -104,9 +104,10 @@ HAS_V0_1=$(grep -n "func ValidateV0_1" internal/devlang/validate.go 2>/dev/null 
 HAS_V0_2=$(grep -n "func ValidateV0_2" internal/devlang/validate.go 2>/dev/null | wc -l || echo 0)
 HAS_V0_3=$(grep -n "func ValidateV0_3" internal/devlang/validate.go 2>/dev/null | wc -l || echo 0)
 HAS_V0_4=$(grep -n "func ValidateV0_4" internal/devlang/validate.go 2>/dev/null | wc -l || echo 0)
+HAS_V0_5=$(grep -n "func ValidateV0_5" internal/devlang/validate.go 2>/dev/null | wc -l || echo 0)
 
-if [ "$HAS_V0_1" -gt 0 ] && [ "$HAS_V0_2" -gt 0 ] && [ "$HAS_V0_3" -gt 0 ] && [ "$HAS_V0_4" -gt 0 ]; then
-    pass "All version validation functions present (v0.1-v0.4)"
+if [ "$HAS_V0_1" -gt 0 ] && [ "$HAS_V0_2" -gt 0 ] && [ "$HAS_V0_3" -gt 0 ] && [ "$HAS_V0_4" -gt 0 ] && [ "$HAS_V0_5" -gt 0 ]; then
+    pass "All version validation functions present (v0.1-v0.5)"
 else
     fail "Missing version validation functions"
 fi
@@ -123,7 +124,7 @@ else
 fi
 
 # Check that test structure exists
-if [ -d "tests/v0_4" ]; then
+if [ -d "tests/v0_5" ]; then
     pass "Test directory structure exists"
 else
     warn "Test directory structure incomplete"
@@ -135,11 +136,12 @@ TEST_SCRIPTS=0
 [ -f "test_v0_2.sh" ] && TEST_SCRIPTS=$((TEST_SCRIPTS + 1))
 [ -f "test_v0_3.sh" ] && TEST_SCRIPTS=$((TEST_SCRIPTS + 1))
 [ -f "test_v0_4.sh" ] && TEST_SCRIPTS=$((TEST_SCRIPTS + 1))
+[ -f "test_v0_5.sh" ] && TEST_SCRIPTS=$((TEST_SCRIPTS + 1))
 
-if [ "$TEST_SCRIPTS" -eq 4 ]; then
-    pass "All test scripts present (v0.1-v0.4)"
+if [ "$TEST_SCRIPTS" -eq 5 ]; then
+    pass "All test scripts present (v0.1-v0.5)"
 else
-    warn "Some test scripts missing ($TEST_SCRIPTS/4 found)"
+    warn "Some test scripts missing ($TEST_SCRIPTS/5 found)"
 fi
 
 echo

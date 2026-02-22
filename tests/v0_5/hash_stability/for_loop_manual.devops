@@ -1,0 +1,26 @@
+// Manually expanded version - should produce same hash as for-loop version
+
+target "prod" {
+  address = "10.0.0.10:7700"
+}
+
+node "deploy_dev" {
+  type = file.sync
+  src = "./build"
+  dest = "/var/www/dev"
+  targets = [prod]
+}
+
+node "deploy_staging" {
+  type = file.sync
+  src = "./build"
+  dest = "/var/www/staging"
+  targets = [prod]
+}
+
+node "deploy_prod" {
+  type = file.sync
+  src = "./build"
+  dest = "/var/www/prod"
+  targets = [prod]
+}

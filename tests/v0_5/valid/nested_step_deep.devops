@@ -1,0 +1,25 @@
+// Multi-level nested steps (3 levels deep)
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+step "level1" {
+  type = file.sync
+  src = "./src"
+}
+
+step "level2" {
+  type = level1
+  dest = "/tmp"
+}
+
+step "level3" {
+  type = level2
+  incremental = true
+}
+
+node "deploy" {
+  type = level3
+  targets = [server]
+}

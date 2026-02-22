@@ -1,0 +1,22 @@
+// INVALID: indirect circular dependency (A -> B -> C -> A)
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+step "step_a" {
+  type = step_b
+}
+
+step "step_b" {
+  type = step_c
+}
+
+step "step_c" {
+  type = step_a
+}
+
+node "deploy" {
+  type = step_a
+  targets = [server]
+}

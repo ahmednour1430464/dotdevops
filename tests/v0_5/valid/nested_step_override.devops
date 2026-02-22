@@ -1,0 +1,24 @@
+// Nested steps with input overriding
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+step "base_sync" {
+  type = file.sync
+  src = "./default"
+  dest = "/default"
+  incremental = false
+}
+
+step "incremental_sync" {
+  type = base_sync
+  incremental = true
+}
+
+node "deploy_custom" {
+  type = incremental_sync
+  src = "./custom"
+  dest = "/custom"
+  targets = [server]
+}

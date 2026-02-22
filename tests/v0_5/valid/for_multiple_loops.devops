@@ -1,0 +1,26 @@
+// Multiple independent for-loops
+
+target "prod" {
+  address = "10.0.0.10:7700"
+}
+
+let envs = ["dev", "staging"]
+let services = ["api", "worker"]
+
+for env in envs {
+  node "deploy_${env}" {
+    type = file.sync
+    src = "./build_${env}"
+    dest = "/var/www/${env}"
+    targets = [prod]
+  }
+}
+
+for svc in services {
+  node "restart_${svc}" {
+    type = process.exec
+    cmd = ["systemctl", "restart", "${svc}"]
+    cwd = "/tmp"
+    targets = [prod]
+  }
+}

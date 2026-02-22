@@ -1,0 +1,38 @@
+// Comprehensive v0.5 test: for-loops + nested steps + lets
+
+target "server1" {
+  address = "10.0.0.1:7700"
+}
+
+target "server2" {
+  address = "10.0.0.2:7700"
+}
+
+let base_path = "/opt/services"
+let environments = ["dev", "staging", "prod"]
+
+step "base_deploy" {
+  type = file.sync
+  src = "./build"
+  incremental = true
+}
+
+step "env_deploy" {
+  type = base_deploy
+  dest = base_path
+}
+
+for env in environments {
+  node "deploy_${env}" {
+    type = env_deploy
+    dest = "/opt/services/${env}"
+    targets = [server1, server2]
+  }
+}
+
+node "cleanup" {
+  type = process.exec
+  cmd = ["rm", "-rf", "/tmp/build"]
+  cwd = "/tmp"
+  targets = [server1]
+}

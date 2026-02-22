@@ -292,6 +292,7 @@ func (p *Parser) parseForDecl() Decl {
 	rangeExpr := p.parseExpr()
 
 	// expect '{'
+	p.nextToken()
 	if p.cur.Type != LBRACE {
 		p.addError("expected '{' to start for-body", p.cur.Pos)
 	}

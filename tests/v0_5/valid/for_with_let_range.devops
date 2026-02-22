@@ -1,0 +1,17 @@
+// Valid: for-loop with let binding that evaluates to list literal
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+let items = ["a", "b", "c"]
+
+// OK in v0.5: let binding evaluates to list literal at compile time
+for item in items {
+  node "process_${item}" {
+    type = file.sync
+    src = "./${item}"
+    dest = "/tmp/${item}"
+    targets = [server]
+  }
+}

@@ -1,0 +1,15 @@
+// INVALID: for-loop range must be a list
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+// ERROR: range must be a list, not a string
+for ch in "abc" {
+  node "process_${ch}" {
+    type = file.sync
+    src = "./${ch}"
+    dest = "/tmp/${ch}"
+    targets = [server]
+  }
+}

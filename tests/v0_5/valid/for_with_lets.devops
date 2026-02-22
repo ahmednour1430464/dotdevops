@@ -1,0 +1,17 @@
+// For-loops using let bindings in body
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+let base_path = "/opt/app"
+let environments = ["dev", "staging", "prod"]
+
+for env in environments {
+  node "deploy_${env}" {
+    type = file.sync
+    src = "./dist"
+    dest = "${base_path}/${env}"
+    targets = [server]
+  }
+}

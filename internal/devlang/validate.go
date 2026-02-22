@@ -3,6 +3,7 @@ package devlang
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"devopsctl/internal/plan"
 )
@@ -1023,6 +1024,514 @@ func CompileFileV0_4(path string, src []byte) (*CompileResult, error) {
 	}
 
 	p, err := LowerToPlanV0_4(file, lets, steps)
+	if err != nil {
+		return nil, err
+	}
+
+	// IR-level validation using existing plan.Validate
+	if vErrs := plan.Validate(p); len(vErrs) > 0 {
+		errs := make([]error, len(vErrs))
+		for i, e := range vErrs {
+			errs[i] = fmt.Errorf("%s: error: %v", path, e)
+		}
+		return &CompileResult{Errors: errs}, nil
+	}
+
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompileResult{
+		Plan:    p,
+		RawJSON: raw,
+		Errors:  nil,
+	}, nil
+}
+
+// ValidateV0_5 enforces the v0.5 language rules with for-loops and nested steps support.
+func ValidateV0_5(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl) {
+	var errs []error
+	lets := LetEnv{}
+	steps := map[string]*StepDecl{}
+	forLoops := []*ForDecl{}
+
+	// Known primitive types for collision detection
+	primitiveTypes := map[string]bool{
+		"file.sync":    true,
+		"process.exec": true,
+	}
+
+	// 1. Reject unsupported constructs (module still not supported in v0.5).
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ModuleDecl:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  "modules are not supported in language version 0.5",
+			})
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	// 2. Collect and validate let bindings (with expressions, not yet evaluated).
+	for _, decl := range file.Decls {
+		letDecl, ok := decl.(*LetDecl)
+		if !ok {
+			continue
+		}
+
+		if _, exists := lets[letDecl.Name]; exists {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  letDecl.Pos(),
+				Msg:  fmt.Sprintf("duplicate let %q", letDecl.Name),
+			})
+			continue
+		}
+
+		lets[letDecl.Name] = letDecl.Value
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	// 3. Type check all let expressions.
+	for name, expr := range lets {
+		_, err := typeCheckExpr(expr, lets, file.Path)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		_ = name
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	// 4. Evaluate all let expressions to literals (constant folding).
+	evaluatedLets := LetEnv{}
+	for name, expr := range lets {
+		evaluated, err := evaluateExpr(expr, lets, file.Path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		evaluatedLets[name] = evaluated
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	lets = evaluatedLets
+
+	// 5. Collect and validate step definitions.
+	for _, decl := range file.Decls {
+		stepDecl, ok := decl.(*StepDecl)
+		if !ok {
+			continue
+		}
+
+		// Check for duplicate step names
+		if _, exists := steps[stepDecl.Name]; exists {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("duplicate step %q", stepDecl.Name),
+			})
+			continue
+		}
+
+		// Check for primitive name collision
+		if primitiveTypes[stepDecl.Name] {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step name %q conflicts with built-in primitive", stepDecl.Name),
+			})
+			continue
+		}
+
+		body := stepDecl.Body
+
+		// Steps must NOT specify targets
+		if len(body.Targets) > 0 {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step %q must not specify targets (targets belong to node instantiations)", stepDecl.Name),
+			})
+		}
+
+		// Steps must NOT specify depends_on
+		if len(body.DependsOn) > 0 {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step %q must not specify depends_on (graph structure belongs to nodes)", stepDecl.Name),
+			})
+		}
+
+		// Steps must have a type
+		if body.Type == nil {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step %q must specify a type", stepDecl.Name),
+			})
+			continue
+		}
+
+		steps[stepDecl.Name] = stepDecl
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	// 6. Build step dependency graph and detect cycles (v0.5 allows nested steps).
+	stepGraph := buildStepDependencyGraph(steps, primitiveTypes)
+	if cycles := detectStepCycles(stepGraph, steps); len(cycles) > 0 {
+		for _, cycle := range cycles {
+			// Format cycle path as A → B → C → A
+			cyclePath := formatCyclePath(cycle)
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  steps[cycle[0]].Pos(),
+				Msg:  fmt.Sprintf("circular step dependency detected: %s", cyclePath),
+			})
+		}
+		return errs, nil, nil, nil
+	}
+
+	// 7. Validate step types (must eventually resolve to primitives).
+	for name, stepDecl := range steps {
+		if err := validateStepTypeResolution(name, stepDecl, steps, primitiveTypes, file.Path); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	// 8. Collect for-loops.
+	for _, decl := range file.Decls {
+		forDecl, ok := decl.(*ForDecl)
+		if !ok {
+			continue
+		}
+		forLoops = append(forLoops, forDecl)
+	}
+
+	// 9. Validate for-loops.
+	for _, forDecl := range forLoops {
+		// Range must evaluate to a list literal
+		// First, evaluate the range expression (supports lets)
+		rangeExpr := forDecl.Range
+
+		// If it's an identifier, resolve it from lets
+		if ident, ok := rangeExpr.(*Ident); ok {
+			if letVal, exists := lets[ident.Name]; exists {
+				rangeExpr = letVal
+			} else {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  forDecl.Range.Pos(),
+					Msg:  "for-loop range must evaluate to a literal list of strings",
+				})
+				continue
+			}
+		}
+
+		// Now check if it's a list literal
+		listLit, ok := rangeExpr.(*ListLiteral)
+		if !ok {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  forDecl.Range.Pos(),
+				Msg:  "for-loop range must evaluate to a literal list of strings",
+			})
+			continue
+		}
+
+		// Elements must be string literals
+		for _, elem := range listLit.Elems {
+			if _, ok := elem.(*StringLiteral); !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  elem.Pos(),
+					Msg:  "for-loop range must evaluate to a literal list of strings",
+				})
+			}
+		}
+
+		// Body must contain only nodes (no steps, no nested for-loops)
+		for _, bodyDecl := range forDecl.Body {
+			switch bodyDecl.(type) {
+			case *NodeDecl:
+				// OK
+			case *StepDecl, *ForDecl:
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  bodyDecl.Pos(),
+					Msg:  "for-loop body may only contain node declarations",
+				})
+			default:
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  bodyDecl.Pos(),
+					Msg:  "for-loop body may only contain node declarations",
+				})
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil
+	}
+
+	// 10. Build symbol tables for targets and nodes (excluding for-loop generated nodes).
+	targets := map[string]*TargetDecl{}
+	nodes := map[string]*NodeDecl{}
+
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *TargetDecl:
+			if _, exists := targets[d.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("duplicate target %q", d.Name),
+				})
+			} else {
+				targets[d.Name] = d
+			}
+		case *NodeDecl:
+			if _, exists := nodes[d.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("duplicate node %q", d.Name),
+				})
+			} else {
+				nodes[d.Name] = d
+			}
+		}
+	}
+
+	// 11. Validate nodes (resolve whether type is primitive or step).
+	for _, node := range nodes {
+		if node.Type == nil {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.Pos(),
+				Msg:  fmt.Sprintf("node %q must specify a type", node.Name),
+			})
+			continue
+		}
+
+		typeName := node.Type.Name
+
+		// Check if type is a step or primitive
+		_, isStep := steps[typeName]
+		isPrimitive := primitiveTypes[typeName]
+
+		if !isStep && !isPrimitive {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.Type.Pos(),
+				Msg:  fmt.Sprintf("unknown type %q (not a primitive or defined step)", typeName),
+			})
+			continue
+		}
+
+		// Validate targets
+		for _, tIdent := range node.Targets {
+			if _, isLet := lets[tIdent.Name]; isLet {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  tIdent.Pos(),
+					Msg:  fmt.Sprintf("let binding %q cannot be used in targets; targets must reference target declarations", tIdent.Name),
+				})
+				continue
+			}
+			if _, ok := targets[tIdent.Name]; !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  tIdent.Pos(),
+					Msg:  fmt.Sprintf("unknown target %q", tIdent.Name),
+				})
+			}
+		}
+
+		// Validate depends_on
+		for _, dep := range node.DependsOn {
+			if _, ok := nodes[dep.Value]; !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  dep.Pos(),
+					Msg:  fmt.Sprintf("unknown depends_on node %q", dep.Value),
+				})
+			}
+		}
+
+		// Validate failure_policy
+		if node.FailurePolicy != nil {
+			fp := node.FailurePolicy.Name
+			if fp != "halt" && fp != "continue" && fp != "rollback" {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  node.FailurePolicy.Pos(),
+					Msg:  fmt.Sprintf("invalid failure_policy %q; expected one of: halt, continue, rollback", fp),
+				})
+			}
+		}
+
+		// Validate primitive-specific inputs after resolving lets
+		resolvedNode := *node
+		resolvedNode.Inputs = make(map[string]Expr, len(node.Inputs))
+		for key, expr := range node.Inputs {
+			resolvedNode.Inputs[key] = resolveLetExpr(expr, lets)
+		}
+
+		// Only validate inputs if it's a primitive (steps have their own inputs)
+		if isPrimitive {
+			validatePrimitiveInputsV0_1(file.Path, &resolvedNode, &errs)
+		}
+	}
+
+	return errs, lets, steps, forLoops
+}
+
+// buildStepDependencyGraph builds a map of step -> list of steps it depends on.
+func buildStepDependencyGraph(steps map[string]*StepDecl, primitiveTypes map[string]bool) map[string][]string {
+	graph := make(map[string][]string)
+	for name, stepDecl := range steps {
+		if stepDecl.Body.Type == nil {
+			continue
+		}
+		typeName := stepDecl.Body.Type.Name
+		if !primitiveTypes[typeName] {
+			// This step depends on another step
+			graph[name] = append(graph[name], typeName)
+		}
+	}
+	return graph
+}
+
+// detectStepCycles detects cycles in the step dependency graph using DFS.
+func detectStepCycles(graph map[string][]string, steps map[string]*StepDecl) [][]string {
+	visited := make(map[string]bool)
+	recStack := make(map[string]bool)
+	var cycles [][]string
+
+	var dfs func(node string, path []string)
+	dfs = func(node string, path []string) {
+		visited[node] = true
+		recStack[node] = true
+		path = append(path, node)
+
+		for _, neighbor := range graph[node] {
+			if !visited[neighbor] {
+				dfs(neighbor, path)
+			} else if recStack[neighbor] {
+				// Found a cycle
+				cycleStart := -1
+				for i, n := range path {
+					if n == neighbor {
+						cycleStart = i
+						break
+					}
+				}
+				if cycleStart >= 0 {
+					cycle := append([]string{}, path[cycleStart:]...)
+					cycle = append(cycle, neighbor)
+					cycles = append(cycles, cycle)
+				}
+			}
+		}
+
+		recStack[node] = false
+	}
+
+	// Process steps in sorted order for determinism
+	stepNames := make([]string, 0, len(steps))
+	for name := range steps {
+		stepNames = append(stepNames, name)
+	}
+	sort.Strings(stepNames)
+
+	for _, node := range stepNames {
+		if !visited[node] {
+			dfs(node, []string{})
+		}
+	}
+
+	return cycles
+}
+
+// formatCyclePath formats a cycle path as "A → B → C → A"
+func formatCyclePath(cycle []string) string {
+	if len(cycle) == 0 {
+		return ""
+	}
+	result := cycle[0]
+	for i := 1; i < len(cycle); i++ {
+		result += " → " + cycle[i]
+	}
+	return result
+}
+
+// validateStepTypeResolution ensures that a step's type eventually resolves to a primitive.
+func validateStepTypeResolution(stepName string, stepDecl *StepDecl, steps map[string]*StepDecl, primitiveTypes map[string]bool, path string) error {
+	if stepDecl.Body.Type == nil {
+		return &SemanticError{
+			Path: path,
+			Pos:  stepDecl.Pos(),
+			Msg:  fmt.Sprintf("step %q must specify a type", stepName),
+		}
+	}
+
+	typeName := stepDecl.Body.Type.Name
+
+	// Check if it's a primitive
+	if primitiveTypes[typeName] {
+		return nil
+	}
+
+	// Check if it's another step
+	if _, isStep := steps[typeName]; !isStep {
+		return &SemanticError{
+			Path: path,
+			Pos:  stepDecl.Body.Type.Pos(),
+			Msg:  fmt.Sprintf("step %q does not resolve to a primitive type", stepName),
+		}
+	}
+
+	// Recursively validate (cycles already checked)
+	return nil
+}
+
+// CompileFileV0_5 runs parse, v0.5 validate, lower with step expansion and for-loop unrolling, and IR validation.
+func CompileFileV0_5(path string, src []byte) (*CompileResult, error) {
+	file, parseErrs := ParseFile(path, src)
+	if len(parseErrs) > 0 {
+		return &CompileResult{Errors: parseErrs}, nil
+	}
+
+	semErrs, lets, steps, forLoops := ValidateV0_5(file)
+	if len(semErrs) > 0 {
+		return &CompileResult{Errors: semErrs}, nil
+	}
+
+	p, err := LowerToPlanV0_5(file, lets, steps, forLoops)
 	if err != nil {
 		return nil, err
 	}

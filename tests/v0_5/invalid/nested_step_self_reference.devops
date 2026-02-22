@@ -1,0 +1,15 @@
+// INVALID: self-referencing step
+
+target "server" {
+  address = "10.0.0.1:7700"
+}
+
+step "recursive" {
+  type = recursive
+  src = "./data"
+}
+
+node "deploy" {
+  type = recursive
+  targets = [server]
+}

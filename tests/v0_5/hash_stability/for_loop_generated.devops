@@ -1,0 +1,16 @@
+// For-loop version - should produce same hash as manually expanded version
+
+target "prod" {
+  address = "10.0.0.10:7700"
+}
+
+let envs = ["dev", "staging", "prod"]
+
+for env in envs {
+  node "deploy_${env}" {
+    type = file.sync
+    src = "./build"
+    dest = "/var/www/${env}"
+    targets = [prod]
+  }
+}
