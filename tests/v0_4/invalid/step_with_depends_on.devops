@@ -1,0 +1,16 @@
+target "local" {
+  address = "localhost"
+}
+
+// Step with depends_on (invalid - graph structure belongs to nodes)
+step "bad_step" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+  depends_on = ["some_node"]
+}
+
+node "deploy" {
+  type = bad_step
+  targets = [local]
+}

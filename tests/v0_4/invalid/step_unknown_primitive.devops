@@ -1,0 +1,14 @@
+target "local" {
+  address = "localhost"
+}
+
+// Step with unknown primitive type
+step "bad_step" {
+  type = unknown.primitive
+  some_input = "value"
+}
+
+node "deploy" {
+  type = bad_step
+  targets = [local]
+}

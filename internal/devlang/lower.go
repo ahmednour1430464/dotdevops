@@ -176,3 +176,107 @@ func lowerExprV0_2(e Expr, lets LetEnv) (any, error) {
 		return nil, fmt.Errorf("internal error: unsupported expression node in lowering")
 	}
 }
+
+// LowerToPlanV0_4 converts a validated AST with steps into a plan.Plan IR.
+// Steps are expanded to regular nodes at compile time (macro expansion).
+func LowerToPlanV0_4(file *File, lets LetEnv, steps map[string]*StepDecl) (*plan.Plan, error) {
+	p := &plan.Plan{
+		Version: "1.0",
+		Targets: make([]plan.Target, 0),
+		Nodes:   make([]plan.Node, 0),
+	}
+
+	// Collect targets.
+	for _, decl := range file.Decls {
+		targetDecl, ok := decl.(*TargetDecl)
+		if !ok {
+			continue
+		}
+		if targetDecl.Address == nil {
+			return nil, fmt.Errorf("%s:%d:%d: target %q missing address", file.Path, targetDecl.Pos().Line, targetDecl.Pos().Col, targetDecl.Name)
+		}
+		p.Targets = append(p.Targets, plan.Target{
+			ID:      targetDecl.Name,
+			Address: targetDecl.Address.Value,
+		})
+	}
+
+	// Collect and expand nodes.
+	for _, decl := range file.Decls {
+		nodeDecl, ok := decl.(*NodeDecl)
+		if !ok {
+			continue
+		}
+
+		if nodeDecl.Type == nil {
+			return nil, fmt.Errorf("%s:%d:%d: node %q missing type", file.Path, nodeDecl.Pos().Line, nodeDecl.Pos().Col, nodeDecl.Name)
+		}
+
+		typeName := nodeDecl.Type.Name
+
+		// Check if this node references a step
+		stepDecl, isStep := steps[typeName]
+
+		var effectiveNode *NodeDecl
+		if isStep {
+			// Clone step body as base
+			effectiveNode = &NodeDecl{
+				Name:          nodeDecl.Name, // Use node's ID, not step's
+				Type:          stepDecl.Body.Type,
+				Targets:       nodeDecl.Targets,       // From node
+				DependsOn:     nodeDecl.DependsOn,     // From node
+				FailurePolicy: stepDecl.Body.FailurePolicy, // From step (can be overridden)
+				Inputs:        make(map[string]Expr),
+				PosInfo:       nodeDecl.PosInfo,
+			}
+
+			// Merge inputs: step defaults + node overrides
+			for key, expr := range stepDecl.Body.Inputs {
+				effectiveNode.Inputs[key] = expr
+			}
+			for key, expr := range nodeDecl.Inputs {
+				effectiveNode.Inputs[key] = expr // Node overrides step
+			}
+
+			// Node can override failure_policy
+			if nodeDecl.FailurePolicy != nil {
+				effectiveNode.FailurePolicy = nodeDecl.FailurePolicy
+			}
+		} else {
+			// Regular primitive node
+			effectiveNode = nodeDecl
+		}
+
+		// Lower the effective node to plan.Node
+		n := plan.Node{
+			ID:            effectiveNode.Name,
+			Type:          effectiveNode.Type.Name,
+			Targets:       nil,
+			DependsOn:     nil,
+			FailurePolicy: "",
+			Inputs:        map[string]any{},
+		}
+
+		for _, t := range effectiveNode.Targets {
+			n.Targets = append(n.Targets, t.Name)
+		}
+		for _, dep := range effectiveNode.DependsOn {
+			n.DependsOn = append(n.DependsOn, dep.Value)
+		}
+		if effectiveNode.FailurePolicy != nil {
+			n.FailurePolicy = effectiveNode.FailurePolicy.Name
+		}
+
+		for key, expr := range effectiveNode.Inputs {
+			v, err := lowerExprV0_2(expr, lets)
+			if err != nil {
+				return nil, err
+			}
+			n.Inputs[key] = v
+		}
+
+		p.Nodes = append(p.Nodes, n)
+	}
+
+	return p, nil
+}

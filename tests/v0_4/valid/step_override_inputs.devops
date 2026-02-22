@@ -1,0 +1,17 @@
+target "local" {
+  address = "localhost"
+}
+
+// Step with default inputs
+step "sync_app" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+}
+
+// Node overrides dest input
+node "deploy_custom" {
+  type = sync_app
+  dest = "/opt/myapp"
+  targets = [local]
+}

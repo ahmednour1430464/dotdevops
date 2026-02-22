@@ -1,0 +1,11 @@
+target "local" {
+  address = "localhost"
+}
+
+// Manually expanded version (should produce same hash)
+node "deploy" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+  targets = [local]
+}

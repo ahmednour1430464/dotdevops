@@ -4,5 +4,4 @@
 *.pid
 *.pp
 *.json
-*.sh
 devopsctl

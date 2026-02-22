@@ -1,0 +1,21 @@
+target "local" {
+  address = "localhost"
+}
+
+// First step
+step "step_a" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+}
+
+// Second step referencing first step (forbidden in v0.4)
+step "step_b" {
+  type = step_a
+  src  = "./dist"
+}
+
+node "deploy" {
+  type = step_b
+  targets = [local]
+}

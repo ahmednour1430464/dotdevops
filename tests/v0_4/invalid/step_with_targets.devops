@@ -1,0 +1,20 @@
+target "local" {
+  address = "localhost"
+}
+
+target "remote" {
+  address = "192.168.1.100"
+}
+
+// Step with targets (invalid - targets belong to nodes)
+step "bad_step" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+  targets = [local, remote]
+}
+
+node "deploy" {
+  type = bad_step
+  targets = [local]
+}

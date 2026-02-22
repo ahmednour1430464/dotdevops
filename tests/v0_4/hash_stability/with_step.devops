@@ -1,0 +1,15 @@
+target "local" {
+  address = "localhost"
+}
+
+// Step version
+step "deploy_app" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+}
+
+node "deploy" {
+  type = deploy_app
+  targets = [local]
+}

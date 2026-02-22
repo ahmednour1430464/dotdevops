@@ -1,0 +1,47 @@
+target "local" {
+  address = "localhost"
+}
+
+target "remote" {
+  address = "192.168.1.100"
+}
+
+let env = "production"
+let app_dir = "/opt/" + env
+
+// Step with failure_policy
+step "safe_sync" {
+  type = file.sync
+  src  = "./dist"
+  dest = app_dir
+  failure_policy = continue
+}
+
+// Step for running commands
+step "restart_service" {
+  type = process.exec
+  cmd  = ["systemctl", "restart", "myapp"]
+  cwd  = "/tmp"
+  failure_policy = halt
+}
+
+// Deploy to local
+node "deploy_local" {
+  type = safe_sync
+  targets = [local]
+}
+
+// Deploy to remote
+node "deploy_remote" {
+  type = safe_sync
+  targets = [remote]
+  depends_on = ["deploy_local"]
+}
+
+// Restart service on remote (override failure_policy)
+node "restart_remote" {
+  type = restart_service
+  targets = [remote]
+  depends_on = ["deploy_remote"]
+  failure_policy = rollback
+}

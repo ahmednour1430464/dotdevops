@@ -1,0 +1,16 @@
+target "local" {
+  address = "localhost"
+}
+
+// Basic step definition
+step "sync_files" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+}
+
+// Use the step
+node "deploy" {
+  type = sync_files
+  targets = [local]
+}

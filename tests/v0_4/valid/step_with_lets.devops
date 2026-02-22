@@ -1,0 +1,21 @@
+target "local" {
+  address = "localhost"
+}
+
+// Let bindings
+let base_dir = "/var/www"
+let app_name = "myapp"
+let deploy_path = base_dir + "/" + app_name
+
+// Step using let bindings
+step "deploy_app" {
+  type = file.sync
+  src  = "./build"
+  dest = deploy_path
+}
+
+// Use the step
+node "deploy_prod" {
+  type = deploy_app
+  targets = [local]
+}

@@ -1,0 +1,9 @@
+target "local" {
+  address = "localhost"
+}
+
+// Node references non-existent step
+node "deploy" {
+  type = undefined_step
+  targets = [local]
+}

@@ -714,3 +714,336 @@ func CompileFileV0_3(path string, src []byte) (*CompileResult, error) {
 	}, nil
 }
 
+// ValidateV0_4 enforces the v0.4 language rules with reusable step support.
+func ValidateV0_4(file *File) ([]error, LetEnv, map[string]*StepDecl) {
+	var errs []error
+	lets := LetEnv{}
+	steps := map[string]*StepDecl{}
+
+	// Known primitive types for collision detection
+	primitiveTypes := map[string]bool{
+		"file.sync":    true,
+		"process.exec": true,
+	}
+
+	// 1. Reject unsupported constructs (for and module still not supported in v0.4).
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ForDecl:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  "for expressions are not supported in language version 0.4",
+			})
+		case *ModuleDecl:
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  "modules are not supported in language version 0.4",
+			})
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil
+	}
+
+	// 2. Collect and validate let bindings (with expressions, not yet evaluated).
+	for _, decl := range file.Decls {
+		letDecl, ok := decl.(*LetDecl)
+		if !ok {
+			continue
+		}
+
+		if _, exists := lets[letDecl.Name]; exists {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  letDecl.Pos(),
+				Msg:  fmt.Sprintf("duplicate let %q", letDecl.Name),
+			})
+			continue
+		}
+
+		lets[letDecl.Name] = letDecl.Value
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil
+	}
+
+	// 3. Type check all let expressions.
+	for name, expr := range lets {
+		_, err := typeCheckExpr(expr, lets, file.Path)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		_ = name
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil
+	}
+
+	// 4. Evaluate all let expressions to literals (constant folding).
+	evaluatedLets := LetEnv{}
+	for name, expr := range lets {
+		evaluated, err := evaluateExpr(expr, lets, file.Path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		evaluatedLets[name] = evaluated
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil
+	}
+
+	lets = evaluatedLets
+
+	// 5. Collect and validate step definitions.
+	for _, decl := range file.Decls {
+		stepDecl, ok := decl.(*StepDecl)
+		if !ok {
+			continue
+		}
+
+		// Check for duplicate step names
+		if _, exists := steps[stepDecl.Name]; exists {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("duplicate step %q", stepDecl.Name),
+			})
+			continue
+		}
+
+		// Check for primitive name collision
+		if primitiveTypes[stepDecl.Name] {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step name %q conflicts with built-in primitive", stepDecl.Name),
+			})
+			continue
+		}
+
+		body := stepDecl.Body
+
+		// Steps must NOT specify targets
+		if len(body.Targets) > 0 {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step %q must not specify targets (targets belong to node instantiations)", stepDecl.Name),
+			})
+		}
+
+		// Steps must NOT specify depends_on
+		if len(body.DependsOn) > 0 {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step %q must not specify depends_on (graph structure belongs to nodes)", stepDecl.Name),
+			})
+		}
+
+		// Steps must have a type
+		if body.Type == nil {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  stepDecl.Pos(),
+				Msg:  fmt.Sprintf("step %q must specify a type", stepDecl.Name),
+			})
+			continue
+		}
+
+		// Step type must be a known primitive, not another step
+		stepType := body.Type.Name
+		if !primitiveTypes[stepType] {
+			// Check if it references another step (forbidden in v0.4)
+			if _, isStep := steps[stepType]; isStep {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  body.Type.Pos(),
+					Msg:  fmt.Sprintf("step %q cannot reference step %q (nested steps are not supported in v0.4)", stepDecl.Name, stepType),
+				})
+			} else {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  body.Type.Pos(),
+					Msg:  fmt.Sprintf("step %q has unknown primitive type %q", stepDecl.Name, stepType),
+				})
+			}
+			continue
+		}
+
+		// Validate failure_policy if present
+		if body.FailurePolicy != nil {
+			fp := body.FailurePolicy.Name
+			if fp != "halt" && fp != "continue" && fp != "rollback" {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  body.FailurePolicy.Pos(),
+					Msg:  fmt.Sprintf("step %q has invalid failure_policy %q; expected one of: halt, continue, rollback", stepDecl.Name, fp),
+				})
+			}
+		}
+
+		steps[stepDecl.Name] = stepDecl
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil
+	}
+
+	// 6. Build symbol tables for targets and nodes.
+	targets := map[string]*TargetDecl{}
+	nodes := map[string]*NodeDecl{}
+
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *TargetDecl:
+			if _, exists := targets[d.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("duplicate target %q", d.Name),
+				})
+			} else {
+				targets[d.Name] = d
+			}
+		case *NodeDecl:
+			if _, exists := nodes[d.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("duplicate node %q", d.Name),
+				})
+			} else {
+				nodes[d.Name] = d
+			}
+		}
+	}
+
+	// 7. Validate nodes (resolve whether type is primitive or step).
+	for _, node := range nodes {
+		if node.Type == nil {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.Pos(),
+				Msg:  fmt.Sprintf("node %q must specify a type", node.Name),
+			})
+			continue
+		}
+
+		typeName := node.Type.Name
+
+		// Check if type is a step or primitive
+		_, isStep := steps[typeName]
+		isPrimitive := primitiveTypes[typeName]
+
+		if !isStep && !isPrimitive {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.Type.Pos(),
+				Msg:  fmt.Sprintf("unknown type %q (not a primitive or defined step)", typeName),
+			})
+			continue
+		}
+
+		// Validate targets
+		for _, tIdent := range node.Targets {
+			if _, isLet := lets[tIdent.Name]; isLet {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  tIdent.Pos(),
+					Msg:  fmt.Sprintf("let binding %q cannot be used in targets; targets must reference target declarations", tIdent.Name),
+				})
+				continue
+			}
+			if _, ok := targets[tIdent.Name]; !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  tIdent.Pos(),
+					Msg:  fmt.Sprintf("unknown target %q", tIdent.Name),
+				})
+			}
+		}
+
+		// Validate depends_on
+		for _, dep := range node.DependsOn {
+			if _, ok := nodes[dep.Value]; !ok {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  dep.Pos(),
+					Msg:  fmt.Sprintf("unknown depends_on node %q", dep.Value),
+				})
+			}
+		}
+
+		// Validate failure_policy
+		if node.FailurePolicy != nil {
+			fp := node.FailurePolicy.Name
+			if fp != "halt" && fp != "continue" && fp != "rollback" {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  node.FailurePolicy.Pos(),
+					Msg:  fmt.Sprintf("invalid failure_policy %q; expected one of: halt, continue, rollback", fp),
+				})
+			}
+		}
+
+		// Validate primitive-specific inputs after resolving lets
+		resolvedNode := *node
+		resolvedNode.Inputs = make(map[string]Expr, len(node.Inputs))
+		for key, expr := range node.Inputs {
+			resolvedNode.Inputs[key] = resolveLetExpr(expr, lets)
+		}
+
+		// Only validate inputs if it's a primitive (steps have their own inputs)
+		if isPrimitive {
+			validatePrimitiveInputsV0_1(file.Path, &resolvedNode, &errs)
+		}
+	}
+
+	return errs, lets, steps
+}
+
+// CompileFileV0_4 runs parse, v0.4 validate, lower with step expansion, and IR validation.
+func CompileFileV0_4(path string, src []byte) (*CompileResult, error) {
+	file, parseErrs := ParseFile(path, src)
+	if len(parseErrs) > 0 {
+		return &CompileResult{Errors: parseErrs}, nil
+	}
+
+	semErrs, lets, steps := ValidateV0_4(file)
+	if len(semErrs) > 0 {
+		return &CompileResult{Errors: semErrs}, nil
+	}
+
+	p, err := LowerToPlanV0_4(file, lets, steps)
+	if err != nil {
+		return nil, err
+	}
+
+	// IR-level validation using existing plan.Validate
+	if vErrs := plan.Validate(p); len(vErrs) > 0 {
+		errs := make([]error, len(vErrs))
+		for i, e := range vErrs {
+			errs[i] = fmt.Errorf("%s: error: %v", path, e)
+		}
+		return &CompileResult{Errors: errs}, nil
+	}
+
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompileResult{
+		Plan:    p,
+		RawJSON: raw,
+		Errors:  nil,
+	}, nil
+}

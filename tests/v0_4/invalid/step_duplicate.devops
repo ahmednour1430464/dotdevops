@@ -1,0 +1,22 @@
+target "local" {
+  address = "localhost"
+}
+
+// First step
+step "deploy_app" {
+  type = file.sync
+  src  = "./build"
+  dest = "/var/www"
+}
+
+// Duplicate step name (should fail)
+step "deploy_app" {
+  type = process.exec
+  cmd  = ["echo", "duplicate"]
+  cwd  = "/tmp"
+}
+
+node "test" {
+  type = deploy_app
+  targets = [local]
+}

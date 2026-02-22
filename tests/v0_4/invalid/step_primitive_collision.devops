@@ -1,0 +1,14 @@
+target "local" {
+  address = "localhost"
+}
+
+// Step name collides with primitive type (forbidden)
+step "file.sync" {
+  src  = "./build"
+  dest = "/var/www"
+}
+
+node "deploy" {
+  type = file.sync
+  targets = [local]
+}
