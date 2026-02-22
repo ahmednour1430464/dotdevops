@@ -18,10 +18,13 @@ import (
 	"devopsctl/internal/state"
 )
 
+const version = "0.6.0-dev"
+
 func main() {
 	root := &cobra.Command{
-		Use:   "devopsctl",
-		Short: "Programming-first DevOps execution engine",
+		Use:     "devopsctl",
+		Short:   "Programming-first DevOps execution engine",
+		Version: version,
 	}
 
 	// ── devopsctl apply ───────────────────────────────────────────────────────
