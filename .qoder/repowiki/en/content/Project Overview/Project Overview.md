@@ -2,6 +2,8 @@
 
 <cite>
 **Referenced Files in This Document**
+- [README.md](file://README.md)
+- [DESIGN.md](file://DESIGN.md)
 - [main.go](file://cmd/devopsctl/main.go)
 - [orchestrator.go](file://internal/controller/orchestrator.go)
 - [parser.go](file://internal/devlang/parser.go)
@@ -17,38 +19,502 @@
 - [go.mod](file://go.mod)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Enhanced introduction with comprehensive README integration providing extensive user guidance
+- Updated installation and quick start sections with detailed setup instructions
+- Expanded CLI command documentation with comprehensive examples and flags
+- Added language version support documentation with feature matrix
+- Integrated practical examples demonstrating common use cases
+- Enhanced architecture section with README's architectural explanations
+- Updated development and testing information with comprehensive coverage
+
 ## Table of Contents
 1. [Introduction](#introduction)
-2. [Project Structure](#project-structure)
-3. [Core Components](#core-components)
-4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+2. [Core Concepts](#core-concepts)
+3. [Installation](#installation)
+4. [Quick Start](#quick-start)
+5. [Usage](#usage)
+6. [Language Versions](#language-versions)
+7. [Examples](#examples)
+8. [Architecture](#architecture)
+9. [Development](#development)
+10. [Project Structure](#project-structure)
+11. [Core Components](#core-components)
+12. [Architecture Overview](#architecture-overview)
+13. [Detailed Component Analysis](#detailed-component-analysis)
+14. [Dependency Analysis](#dependency-analysis)
+15. [Performance Considerations](#performance-considerations)
+16. [Troubleshooting Guide](#troubleshooting-guide)
+17. [Conclusion](#conclusion)
 
 ## Introduction
 
-DevOpsCtl is a programming-first DevOps execution engine designed to transform infrastructure automation through a custom Domain-Specific Language (.devops files). Unlike traditional DevOps tools that rely on declarative YAML or JSON configurations, DevOpsCtl treats infrastructure as code by enabling developers to write automation logic in a familiar programming paradigm.
+DevOpsCtl is a programming-first DevOps automation tool with deterministic execution and state management. It represents a paradigm shift in infrastructure automation by combining the flexibility of programming languages with the reliability of DevOps practices. The tool compiles high-level `.devops` plans into flat, deterministic primitives for distributed execution, providing idempotent operations, dependency resolution, parallel execution, and comprehensive state tracking.
 
-### Core Philosophy
+**Key Philosophy**: DevOpsCtl treats infrastructure as code by enabling developers to write automation logic in a familiar programming paradigm rather than relying on declarative YAML or JSON configurations. The system follows the principle that "all language features compile to flat, deterministic primitives" - ensuring that the runtime never learns new concepts and complexity grows upward (language) rather than downward (runtime).
 
-The project embodies the philosophy that infrastructure should be treated as code, where:
-- **Execution Plans** define automated workflows as structured programs
-- **Targets** represent remote servers or environments as first-class programming constructs
-- **Primitives** provide composable building blocks for infrastructure operations
-- **Nodes** represent individual units of work within execution plans
+**Core Capabilities**:
+- Declarative Language: Write infrastructure plans in the `.devops` language
+- Deterministic Compilation: All high-level constructs compile to flat primitives
+- Dependency Resolution: Automatic dependency graph construction and execution
+- Parallel Execution: Concurrent node execution with configurable parallelism
+- State Management: Built-in state tracking for idempotent operations
+- Reconciliation: Detect and correct infrastructure drift automatically
+- Resume Capability: Resume failed executions from the last successful state
+- Dry-Run Mode: Preview changes before applying them
+- Rollback Support: Reverse previous executions safely
+- Distributed Execution: Agent-based architecture for remote target management
 
-### Relationship to Traditional DevOps Tools
+**Relationship to Traditional DevOps Tools**: DevOpsCtl complements rather than replaces existing DevOps ecosystems. While Terraform/AWS CloudFormation provide programmatic control over infrastructure provisioning, Ansible/Puppet offer flexible automation beyond static playbooks, and Kubernetes enables container orchestration with custom logic, DevOpsCtl adds programming capabilities to deployment workflows through its custom DSL and distributed execution model.
 
-DevOpsCtl complements rather than replaces existing DevOps ecosystems:
-- **Terraform/AWS CloudFormation**: Provides programmatic control over infrastructure provisioning
-- **Ansible/Puppet**: Offers flexible automation beyond static playbooks
-- **Kubernetes**: Enables container orchestration with custom logic
-- **CI/CD Pipelines**: Adds programming capabilities to deployment workflows
+**Section sources**
+- [README.md](file://README.md#L1-L528)
+- [DESIGN.md](file://DESIGN.md#L1-L334)
 
-Traditional tools often require separate configuration files and complex templating systems. DevOpsCtl consolidates these concerns into a unified programming model where infrastructure automation becomes as straightforward as writing application code.
+## Core Concepts
+
+DevOpsCtl introduces several fundamental concepts that form the foundation of its programming-first approach:
+
+- **Target**: A remote machine or environment where operations execute (identified by address)
+- **Node**: A unit of work with a specific primitive type (e.g., `file.sync`, `process.exec`)
+- **Primitive**: Built-in operation types (file synchronization, process execution)
+- **Plan**: A collection of targets and nodes that define the desired state
+- **State Store**: Local SQLite database tracking execution history
+- **Agent**: Daemon running on target machines to execute primitives
+
+These concepts work together to create a cohesive system where infrastructure automation becomes as straightforward as writing application code, with clear abstractions for managing distributed operations.
+
+**Section sources**
+- [README.md](file://README.md#L34-L42)
+
+## Installation
+
+### Prerequisites
+
+DevOpsCtl requires the following prerequisites:
+- Go 1.18 or higher
+- Linux, macOS, or Windows operating systems
+
+### Build from Source
+
+The project can be built from source using the standard Go build process:
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/devopsctl.git
+cd devopsctl
+
+# Build the binary
+go build -o devopsctl ./cmd/devopsctl
+
+# (Optional) Move to PATH
+sudo mv devopsctl /usr/local/bin/
+```
+
+### Verify Installation
+
+After installation, verify that DevOpsCtl is working correctly:
+
+```bash
+devopsctl --version
+```
+
+This should display the current version of DevOpsCtl (currently 0.6.0-dev).
+
+**Section sources**
+- [README.md](file://README.md#L43-L68)
+- [go.mod](file://go.mod#L1-L14)
+
+## Quick Start
+
+### 1. Start the Agent
+
+First, start the DevOpsCtl agent on the target machine (or localhost for testing):
+
+```bash
+devopsctl agent --addr 127.0.0.1:7700
+```
+
+The agent runs in the foreground. Keep this terminal open or run it as a background service. The agent serves as the execution endpoint on target machines, handling primitive operations and maintaining state locally.
+
+### 2. Create Your First Plan
+
+Create a file named `plan.devops` with the following content:
+
+```hcl
+target "local" {
+  address = "127.0.0.1:7700"
+}
+
+node "hello" {
+  type    = process.exec
+  targets = [local]
+  
+  cmd = ["echo", "Hello from devopsctl!"]
+  cwd = "/tmp"
+}
+```
+
+This simple plan defines a target (localhost) and a node that executes a shell command. The plan demonstrates the basic structure of DevOpsCtl's `.devops` language.
+
+### 3. Apply the Plan
+
+Execute the plan against the configured target:
+
+```bash
+# Compile and apply the plan
+devopsctl apply plan.devops
+
+# Or preview changes first
+devopsctl apply --dry-run plan.devops
+```
+
+The `apply` command automatically compiles `.devops` source files to JSON plans and executes them against the specified targets.
+
+### 4. Check State
+
+View the execution history and state:
+
+```bash
+# View execution history
+devopsctl state list
+```
+
+This command displays all execution records from the state store, showing the results of previous operations.
+
+**Section sources**
+- [README.md](file://README.md#L70-L116)
+
+## Usage
+
+### Writing Plans
+
+Plans are written in the `.devops` language, which provides a structured approach to defining infrastructure automation. The language supports various constructs for building complex automation scenarios.
+
+#### Targets
+
+Define where operations will execute:
+
+```hcl
+target "production" {
+  address = "192.168.1.100:7700"
+}
+
+target "staging" {
+  address = "192.168.1.101:7700"
+}
+```
+
+Targets represent remote machines or environments where operations will execute. Each target has a unique identifier and an address specifying how to connect to it.
+
+#### Nodes
+
+Define operations to perform:
+
+```hcl
+# File synchronization
+node "deploy-app" {
+  type    = file.sync
+  targets = [production]
+  
+  src  = "./build"
+  dest = "/var/www/myapp"
+}
+
+# Process execution
+node "restart-service" {
+  type       = process.exec
+  targets    = [production]
+  depends_on = ["deploy-app"]
+  
+  cmd = ["systemctl", "restart", "myapp"]
+  cwd = "/var/www/myapp"
+}
+```
+
+Nodes represent individual units of work within execution plans. They specify the primitive type to execute, the targets where execution occurs, and the inputs required for the operation.
+
+#### Variables (Let Bindings)
+
+Use variables for reusable values:
+
+```hcl
+let app_name = "myapp"
+let base_dir = "/var/www"
+let full_path = base_dir + "/" + app_name
+
+node "deploy" {
+  type    = file.sync
+  targets = [local]
+  src     = "./build"
+  dest    = full_path
+}
+```
+
+Variables (also called let bindings) provide a way to define reusable values that can be referenced throughout the plan.
+
+#### Expressions (v0.3+)
+
+Use expressions for dynamic values:
+
+```hcl
+let is_prod = true
+let log_level = is_prod ? "error" : "debug"
+let backup_enabled = is_prod && true
+let deploy_path = is_prod ? "/var/www/prod" : "/var/www/dev"
+
+node "configure" {
+  type    = process.exec
+  targets = [local]
+  cmd     = ["echo", log_level]
+}
+```
+
+Expressions enable dynamic behavior in plans, supporting boolean logic, string concatenation, and ternary operations.
+
+**Section sources**
+- [README.md](file://README.md#L117-L194)
+
+## Language Versions
+
+DevOpsCtl supports multiple language versions with incremental features, allowing users to choose the appropriate level of functionality for their needs:
+
+| Version | Features | Status |
+|---------|----------|--------|
+| v0.1 | Targets, Nodes, Primitives | ✅ Stable |
+| v0.2 | Let bindings (variables) | ✅ Stable |
+| v0.3 | Expressions (ternary, operators, concat) | ✅ Stable |
+| v0.4 | Reusable steps (macros) | ✅ Stable |
+| v0.5 | Nested steps, For-loops | 🔧 In Development |
+| v0.6 | Step parameters | 🔧 In Development |
+| v0.7 | Step libraries (imports) | 🔧 Planned |
+
+**Default version**: v0.3
+
+Specify version with `--lang` flag:
+```bash
+devopsctl apply --lang v0.4 plan.devops
+```
+
+Each version maintains strict validation and deterministic behavior, ensuring that language features compile away completely to primitives without runtime understanding of high-level constructs.
+
+**Section sources**
+- [README.md](file://README.md#L315-L334)
+- [DESIGN.md](file://DESIGN.md#L308-L318)
+
+## Examples
+
+### Basic File Synchronization
+
+A simple example demonstrating file synchronization across a single target:
+
+```hcl
+target "webserver" {
+  address = "192.168.1.100:7700"
+}
+
+node "sync-website" {
+  type    = file.sync
+  targets = [webserver]
+  
+  src  = "./dist"
+  dest = "/var/www/html"
+}
+```
+
+This example shows how to deploy static website files to a remote web server using the file synchronization primitive.
+
+### Multi-Step Deployment with Dependencies
+
+Complex deployments involving multiple sequential operations:
+
+```hcl
+target "app-server" {
+  address = "10.0.1.50:7700"
+}
+
+node "deploy-code" {
+  type    = file.sync
+  targets = [app-server]
+  src     = "./build"
+  dest    = "/opt/myapp"
+}
+
+node "install-deps" {
+  type       = process.exec
+  targets    = [app-server]
+  depends_on = ["deploy-code"]
+  cmd        = ["npm", "install", "--production"]
+  cwd        = "/opt/myapp"
+}
+
+node "restart-app" {
+  type       = process.exec
+  targets    = [app-server]
+  depends_on = ["install-deps"]
+  cmd        = ["systemctl", "restart", "myapp"]
+}
+```
+
+This example demonstrates a complete deployment pipeline with proper dependency management and sequential execution.
+
+### Environment-Specific Configuration
+
+Dynamic configuration based on environment variables:
+
+```hcl
+target "prod" {
+  address = "prod.example.com:7700"
+}
+
+target "dev" {
+  address = "dev.example.com:7700"
+}
+
+let is_production = true
+let app_dir = is_production ? "/var/www/prod" : "/var/www/dev"
+let config_file = is_production ? "config.prod.json" : "config.dev.json"
+
+node "deploy" {
+  type    = file.sync
+  targets = is_production ? [prod] : [dev]
+  src     = "./dist"
+  dest    = app_dir
+}
+
+node "configure" {
+  type       = process.exec
+  targets    = is_production ? [prod] : [dev]
+  depends_on = ["deploy"]
+  cmd        = ["cp", config_file, "config.json"]
+  cwd        = app_dir
+}
+```
+
+This example shows how to use expressions to create environment-specific deployments.
+
+### Parallel Multi-Target Deployment
+
+Deploying to multiple targets simultaneously:
+
+```hcl
+target "web1" {
+  address = "web1.example.com:7700"
+}
+
+target "web2" {
+  address = "web2.example.com:7700"
+}
+
+target "web3" {
+  address = "web3.example.com:7700"
+}
+
+node "deploy-all" {
+  type    = file.sync
+  targets = [web1, web2, web3]
+  src     = "./dist"
+  dest    = "/var/www/html"
+}
+```
+
+This example demonstrates how to deploy the same content to multiple servers in parallel.
+
+**Section sources**
+- [README.md](file://README.md#L336-L436)
+
+## Architecture
+
+DevOpsCtl follows a compile-to-primitives architecture that ensures deterministic execution and state management:
+
+```
+.devops Source → Parser → AST → Validator → Lowering → Flat Plan (JSON)
+                                                            ↓
+                                                      Orchestrator
+                                                            ↓
+                                                  Dependency Graph Builder
+                                                            ↓
+                                                      Parallel Executor
+                                                            ↓
+                                                  Agent Communication
+                                                            ↓
+                                                Primitives (file.sync, process.exec)
+```
+
+### Key Principles
+
+1. **All language features compile to flat primitives** - No high-level constructs survive compilation
+2. **Hashes are computed after full expansion** - Ensures deterministic builds
+3. **Deterministic order everywhere** - Reproducible across environments
+4. **Validation is version-strict** - Explicit feature gates per version
+
+### Components
+
+- **Compiler** (`internal/devlang/`): Lexer, parser, AST, validator, lowering
+- **Plan Schema** (`internal/plan/`): JSON plan structure and validation
+- **Controller** (`internal/controller/`): Orchestrator, graph builder, execution engine
+- **Primitives** (`internal/primitive/`): File sync, process execution
+- **State Store** (`internal/state/`): SQLite-based execution tracking
+- **Agent** (`internal/agent/`): Remote execution daemon and protocol
+- **CLI** (`cmd/devopsctl/`): Command-line interface
+
+**Section sources**
+- [README.md](file://README.md#L438-L472)
+- [DESIGN.md](file://DESIGN.md#L1-L81)
+
+## Development
+
+### Running Tests
+
+The project includes comprehensive testing infrastructure:
+
+```bash
+# Unit tests
+go test ./...
+
+# Language version tests
+./test_v0_3.sh
+./test_v0_4.sh
+./test_v0_5.sh
+./test_v0_6.sh
+
+# Hash stability tests
+./test_hash_stability.sh
+
+# End-to-end tests
+./test_e2e.sh
+```
+
+### Project Structure
+
+```
+devopsctl/
+├── cmd/devopsctl/          # CLI entry point
+├── internal/
+│   ├── agent/              # Agent server and handler
+│   ├── controller/         # Orchestrator and execution engine
+│   ├── devlang/            # Language compiler (lexer, parser, AST)
+│   ├── plan/               # Plan schema and validation
+│   ├── primitive/          # Built-in primitives
+│   ├── proto/              # Protocol messages
+│   └── state/              # State store implementation
+├── tests/                  # Language version tests
+│   ├── v0_3/
+│   ├── v0_4/
+│   ├── v0_5/
+│   └── v0_6/
+├── DESIGN.md               # Architecture principles
+├── LANGUAGE_VERSIONS.md    # Version feature matrix
+└── README.md               # This file
+```
+
+### Contributing
+
+Contributions are welcome! Please follow the design principles documented in [DESIGN.md](DESIGN.md). The project maintains strict architectural invariants that ensure long-term stability and deterministic behavior.
+
+**Section sources**
+- [README.md](file://README.md#L473-L527)
 
 ## Project Structure
 
@@ -203,6 +669,9 @@ The architecture adheres to several key principles:
 3. **State-Driven Execution**: Execution decisions are based on recorded state rather than assumptions
 4. **Distributed Control**: Centralized planning with distributed execution
 5. **Extensible Primitives**: Modular primitive system allowing custom operations
+
+**Section sources**
+- [orchestrator.go](file://internal/controller/orchestrator.go#L1-L653)
 
 ## Detailed Component Analysis
 
@@ -509,4 +978,10 @@ DevOpsCtl represents a paradigm shift in infrastructure automation by combining 
 
 The project successfully bridges the gap between traditional DevOps tooling and modern programming practices, offering developers familiar abstractions while maintaining the operational reliability expected in production environments. Through its programming-first approach, DevOpsCtl enables teams to express complex infrastructure logic naturally, reducing cognitive complexity and improving maintainability.
 
-Future development directions include expanding the primitive library, enhancing the DSL with advanced programming constructs, and integrating with popular DevOps ecosystems while preserving the core programming-first philosophy.
+The integration of comprehensive README documentation transforms DevOpsCtl from a code-only project to a well-documented tool, providing extensive user guidance, installation instructions, quick start examples, and architectural explanations that complement the existing technical documentation. This documentation enhancement ensures that both beginners and experienced developers can effectively utilize and contribute to the project.
+
+Future development directions include expanding the primitive library, enhancing the DSL with advanced programming constructs, and integrating with popular DevOps ecosystems while preserving the core programming-first philosophy established by the project's design principles.
+
+**Section sources**
+- [README.md](file://README.md#L521-L528)
+- [DESIGN.md](file://DESIGN.md#L250-L278)

@@ -25,6 +25,7 @@
 - Added v0.4 as a valid option for --lang flags alongside existing v0.1, v0.2, and v0.3 versions
 - Updated language version documentation and examples throughout CLI documentation
 - Enhanced troubleshooting guidance for v0.4 language version usage
+- Documented v0.4 step definitions and macro expansion capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -90,7 +91,7 @@ The DevOpsCtl CLI framework consists of several interconnected components that w
 - **Agent Daemon**: Handles remote execution requests from the controller with streaming file transfers
 - **Development Language Compiler**: Transforms .devops source files into executable plan JSON with multi-version support (v0.1, v0.2, v0.3, and v0.4)
 
-**Updated** The development language compiler now supports four language versions with v0.4 adding reusable step definitions and enhanced expression evaluation.
+**Updated** The development language compiler now supports four language versions with v0.4 adding reusable step definitions and enhanced expression evaluation. v0.4 introduces step definitions that are expanded at compile time to regular nodes, enabling DRY deployments and improved plan organization.
 
 **Section sources**
 - [main.go](file://cmd/devopsctl/main.go#L27-L324)
@@ -148,7 +149,7 @@ devopsctl apply <plan>
 - `--resume`: Safely resume execution from previous failure point (boolean, default: false)
 - `--lang`: Language version for .devops plans (string, default: "v0.3", supported: "v0.1", "v0.2", "v0.3", "v0.4")
 
-**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation.
+**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation. v0.4 introduces reusable step definitions that are expanded at compile time.
 
 **Behavior Highlights**
 - Automatically detects file extension and compiles .devops files using DevLang compiler
@@ -171,7 +172,7 @@ devopsctl apply <plan>
 - Resume after transient failure: Ensure plan_hash and node_hash match latest execution
 - Conditional apply: Use node.when conditions to gate dependent nodes
 - Multi-environment deployment: Control concurrency with parallelism flag
-- **Updated** Step reuse: Leverage v0.4 step definitions for DRY deployments
+- **Updated** Step reuse: Leverage v0.4 step definitions for DRY deployments with automatic macro expansion
 
 **Error Handling**
 - Compilation/validation errors are reported with specific line numbers
@@ -334,7 +335,7 @@ devopsctl plan <subcommand> [flags]
 - `--output` or `-o`: Output file for compiled plan JSON (string, default: stdout)
 - `--lang`: Language version for .devops files (string, default: "v0.3", supported: "v0.1", "v0.2", "v0.3", "v0.4")
 
-**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation.
+**Updated** Language version support now includes v0.4 with enhanced step definitions and expression evaluation. v0.4 introduces step definitions that are expanded at compile time to regular nodes.
 
 **Behavior Highlights**
 - `plan build`: Compiles .devops to plan JSON using DevLang compiler
@@ -450,6 +451,7 @@ DL --> MSG["messages.go"]
 - **State Store Performance**: SQLite WAL mode provides better concurrent access patterns for state queries.
 - **Agent Connection Pooling**: TCP connections are reused efficiently across multiple node operations.
 - **Language Version Performance**: v0.4 introduces step expansion optimization that reduces plan size and improves compilation performance.
+- **Step Expansion**: v0.4 step definitions are expanded at compile time, eliminating runtime overhead while maintaining DRY principles.
 
 ## Troubleshooting Guide
 
@@ -479,6 +481,16 @@ DL --> MSG["messages.go"]
 - **Symptom**: "unknown language version" or step-related validation errors
 - **Cause**: Using v0.4 features with older language versions or vice versa
 - **Resolution**: Specify correct language version with --lang flag, ensure step definitions are valid for v0.4, verify step names don't conflict with built-in primitives
+
+**v0.4 Step Definition Problems**
+- **Symptom**: "duplicate step" or "step name conflicts with built-in primitive" errors
+- **Cause**: Invalid step naming or duplicate definitions
+- **Resolution**: Ensure unique step names, avoid built-in primitive names (file.sync, process.exec), and verify step definitions are properly scoped
+
+**v0.4 Step Expansion Issues**
+- **Symptom**: "step cannot reference step" or "nested steps are not supported" errors
+- **Cause**: Attempting to nest step definitions within v0.4
+- **Resolution**: Use primitive types only in step definitions, avoid referencing other steps, and ensure step bodies contain valid primitive configurations
 
 **Agent Connectivity Issues**
 - **Symptom**: "connect to agent" or "agent accept" errors
@@ -511,4 +523,4 @@ DL --> MSG["messages.go"]
 ## Conclusion
 DevOpsCtl provides a comprehensive CLI framework for authoring, validating, and executing plans against remote targets. The six primary commands (apply, reconcile, agent, state, plan, rollback) offer safe, resumable, and reconciled execution with robust distributed operation and auditing capabilities. The apply and reconcile commands provide essential safety mechanisms through dry-run previews, parallelism control, and resume functionality, while the agent and state store enable reliable distributed operation and comprehensive audit trails. The plan and state commands facilitate artifact management and execution history inspection, supporting both development workflows and production operations.
 
-**Updated** With v0.4 language version support, users can now leverage reusable step definitions, enhanced expression evaluation, and improved plan organization for complex deployment scenarios. The v0.4 version maintains backward compatibility while introducing powerful new features for scalable DevOps automation.
+**Updated** With v0.4 language version support, users can now leverage reusable step definitions, enhanced expression evaluation, and improved plan organization for complex deployment scenarios. The v0.4 version maintains backward compatibility while introducing powerful new features for scalable DevOps automation. Step definitions are expanded at compile time to regular nodes, providing DRY deployment patterns without runtime overhead. The language version support ensures seamless migration paths between different DevOpsCtl versions while preserving existing deployments and workflows.
