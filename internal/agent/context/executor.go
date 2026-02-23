@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -76,6 +77,15 @@ func (e *Executor) ExecuteCommand(ctx context.Context, cmd []string, cwd string,
 func (e *Executor) buildCommand(cmd []string, cwd string) *exec.Cmd {
 	if e.Context.Identity.User == "" || e.Context.Identity.User == "current" {
 		// Run as current user (no user switching)
+		execCmd := exec.Command(cmd[0], cmd[1:]...)
+		execCmd.Dir = cwd
+		return execCmd
+	}
+
+	// Check if the specified user is the current user
+	currentUser, err := user.Current()
+	if err == nil && currentUser.Username == e.Context.Identity.User {
+		// No need to switch users - already running as the specified user
 		execCmd := exec.Command(cmd[0], cmd[1:]...)
 		execCmd.Dir = cwd
 		return execCmd
