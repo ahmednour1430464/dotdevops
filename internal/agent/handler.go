@@ -2,21 +2,23 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"time"
 
+	agentcontext "devopsctl/internal/agent/context"
 	"devopsctl/internal/primitive/filesync"
-	"devopsctl/internal/primitive/processexec"
 	"devopsctl/internal/proto"
 )
 
 // handleConn handles a single controller connection.
 // The protocol is line-delimited JSON: one JSON object per line.
 // The agent is stateless — each connection is independent.
-func handleConn(conn net.Conn) {
+func handleConn(conn net.Conn, contexts map[string]*agentcontext.ExecutionContext, auditLogger *agentcontext.AuditLogger) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 	enc := json.NewEncoder(conn)
@@ -39,11 +41,11 @@ func handleConn(conn net.Conn) {
 
 		switch env.Type {
 		case "detect_req":
-			handleDetect(line, enc)
+			handleDetect(line, enc, contexts)
 		case "apply_req":
-			handleApply(line, r, enc)
+			handleApply(line, r, enc, contexts, auditLogger)
 		case "rollback_req":
-			handleRollback(line, enc)
+			handleRollback(line, enc, contexts, auditLogger)
 		default:
 			log.Printf("[agent] unknown message type: %s", env.Type)
 		}
@@ -51,7 +53,7 @@ func handleConn(conn net.Conn) {
 }
 
 // handleDetect walks the destination directory and streams the FileTree back.
-func handleDetect(raw []byte, enc *json.Encoder) {
+func handleDetect(raw []byte, enc *json.Encoder, contexts map[string]*agentcontext.ExecutionContext) {
 	var req proto.DetectReq
 	if err := json.Unmarshal(raw, &req); err != nil {
 		writeError(enc, "detect_resp", req.NodeID, err)
@@ -87,7 +89,9 @@ func handleDetect(raw []byte, enc *json.Encoder) {
 
 // handleApply reads the ApplyReq, then reads file chunks from the reader,
 // applies them, and sends the result.
-func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder) {
+func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder, 
+                 contexts map[string]*agentcontext.ExecutionContext, 
+                 auditLogger *agentcontext.AuditLogger) {
 	var full applyReqFull
 	if err := json.Unmarshal(raw, &full); err != nil {
 		writeError(enc, "apply_resp", "unknown", err)
@@ -95,13 +99,31 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder) {
 	}
 	req := full.ApplyReq
 
+	// Resolve execution context for this primitive
+	ctx, err := agentcontext.ResolveContext(req.Primitive, contexts)
+	if err != nil {
+		writeError(enc, "apply_resp", req.NodeID, 
+			fmt.Errorf("context resolution: %w", err))
+		return
+	}
+
 	if req.Primitive == "process.exec" {
-		res := processexec.Apply(full.Inputs)
+		res := executeProcessWithContext(ctx, full.Inputs, req.NodeID, auditLogger)
 		_ = enc.Encode(proto.ApplyResp{
 			Type:   "apply_resp",
 			NodeID: req.NodeID,
 			Result: res,
 		})
+		return
+	}
+
+	// file.sync with context validation
+	destStr, _ := full.Inputs["dest"].(string)
+
+	// Validate file path against context
+	executor := &agentcontext.Executor{Context: ctx}
+	if err := executor.ValidateFilePath(destStr, agentcontext.FileOpWrite); err != nil {
+		writeError(enc, "apply_resp", req.NodeID, err)
 		return
 	}
 
@@ -122,7 +144,6 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder) {
 		return &chunk, nil
 	}
 
-	destStr, _ := full.Inputs["dest"].(string)
 	result := filesync.Apply(destStr, full.ChangeSet, map[string]string{
 		"dest": destStr,
 		"mode": fmt.Sprint(full.Inputs["mode"]),
@@ -144,8 +165,72 @@ type applyReqFull struct {
 	Inputs map[string]any `json:"inputs"`
 }
 
+// executeProcessWithContext executes a process primitive with context enforcement.
+func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[string]any, 
+                                nodeID string, auditLogger *agentcontext.AuditLogger) proto.Result {
+	executor := &agentcontext.Executor{
+		Context:       ctx,
+		NodeID:        nodeID,
+		PrimitiveType: "process.exec",
+		AuditLogger:   auditLogger,
+	}
+
+	cmdArrRaw, ok := inputs["cmd"].([]any)
+	if !ok || len(cmdArrRaw) == 0 {
+		return proto.Result{
+			Status:       "failed",
+			RollbackSafe: false,
+			Stderr:       "invalid or missing 'cmd' array",
+		}
+	}
+
+	var cmdArgs []string
+	for _, a := range cmdArrRaw {
+		cmdArgs = append(cmdArgs, fmt.Sprint(a))
+	}
+
+	cwd, _ := inputs["cwd"].(string)
+	timeoutSec := float64(0)
+	if t, ok := inputs["timeout"].(float64); ok {
+		timeoutSec = t
+	}
+
+	execCtx := context.Background()
+	timeout := time.Duration(timeoutSec * float64(time.Second))
+
+	result, err := executor.ExecuteCommand(execCtx, cmdArgs, cwd, timeout)
+
+	res := proto.Result{
+		RollbackSafe: false,
+	}
+
+	if result != nil {
+		res.ExitCode = result.ExitCode
+		res.Stdout = result.Stdout
+		res.Stderr = result.Stderr
+	}
+
+	if err != nil {
+		res.Status = "failed"
+		res.Class = "context_enforcement_error"
+		if res.Stderr != "" {
+			res.Stderr += "\n"
+		}
+		res.Stderr += err.Error()
+	} else if result != nil && result.ExitCode == 0 {
+		res.Status = "success"
+	} else {
+		res.Status = "failed"
+		res.Class = "execution_error"
+	}
+
+	return res
+}
+
 // handleRollback reverts the last apply for the given node.
-func handleRollback(raw []byte, enc *json.Encoder) {
+func handleRollback(raw []byte, enc *json.Encoder, 
+                    contexts map[string]*agentcontext.ExecutionContext, 
+                    auditLogger *agentcontext.AuditLogger) {
 	var full rollbackReqFull
 	if err := json.Unmarshal(raw, &full); err != nil {
 		writeError(enc, "rollback_resp", "unknown", err)

@@ -192,16 +192,30 @@ func main() {
 
 	// ── devopsctl agent ───────────────────────────────────────────────────────
 	var agentAddr string
+	var agentContextsPath string
+	var agentAuditLog string
 
 	agentCmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Start the DevOpsCtl agent daemon on this machine",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			srv := &agent.Server{Addr: agentAddr}
+			if agentContextsPath == "" {
+				return fmt.Errorf("--contexts flag is required")
+			}
+
+			srv := &agent.Server{
+				Addr:         agentAddr,
+				ContextsPath: agentContextsPath,
+				AuditLogPath: agentAuditLog,
+			}
 			return srv.ListenAndServe()
 		},
 	}
 	agentCmd.Flags().StringVar(&agentAddr, "addr", ":7700", "TCP address to listen on")
+	agentCmd.Flags().StringVar(&agentContextsPath, "contexts", "", 
+		"Path to execution contexts config file (REQUIRED)")
+	agentCmd.Flags().StringVar(&agentAuditLog, "audit-log", "/var/log/devopsctl-audit.log", 
+		"Path to audit log file")
 
 	// ── devopsctl state list ──────────────────────────────────────────────────
 	var stateNode string

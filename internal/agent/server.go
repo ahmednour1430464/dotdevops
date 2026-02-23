@@ -10,15 +10,54 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	agentcontext "devopsctl/internal/agent/context"
 )
 
 // Server is the agent TCP server.
 type Server struct {
-	Addr string
+	Addr         string
+	ContextsPath string
+	AuditLogPath string
+
+	contexts    map[string]*agentcontext.ExecutionContext
+	auditLogger *agentcontext.AuditLogger
+}
+
+// LoadConfiguration loads execution contexts and initializes the audit logger.
+func (s *Server) LoadConfiguration() error {
+	// Load contexts
+	contexts, err := agentcontext.LoadContexts(s.ContextsPath)
+	if err != nil {
+		return fmt.Errorf("load contexts: %w", err)
+	}
+	s.contexts = contexts
+
+	// Initialize audit logger
+	if s.AuditLogPath != "" {
+		logger, err := agentcontext.NewAuditLogger(s.AuditLogPath)
+		if err != nil {
+			return fmt.Errorf("init audit logger: %w", err)
+		}
+		s.auditLogger = logger
+	}
+
+	log.Printf("[agent] loaded %d execution contexts", len(s.contexts))
+	return nil
 }
 
 // ListenAndServe starts the agent and blocks until a SIGTERM/SIGINT is received.
 func (s *Server) ListenAndServe() error {
+	// Load configuration first
+	if err := s.LoadConfiguration(); err != nil {
+		return err
+	}
+	defer func() {
+		if s.auditLogger != nil {
+			s.auditLogger.Close()
+		}
+	}()
+
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return fmt.Errorf("agent listen %s: %w", s.Addr, err)
@@ -45,6 +84,6 @@ func (s *Server) ListenAndServe() error {
 				return fmt.Errorf("agent accept: %w", err)
 			}
 		}
-		go handleConn(conn)
+		go handleConn(conn, s.contexts, s.auditLogger)
 	}
 }

@@ -1,0 +1,116 @@
+contexts:
+  - name: safe_user_space
+    purpose: Safe user-space execution without privileges
+    trust_level: low
+    identity:
+      user: devopsctl
+      group: devopsctl
+    privilege:
+      allow_escalation: false
+    filesystem:
+      readable_paths:
+        - /tmp
+        - /var/tmp
+        - /home/devopsctl
+      writable_paths:
+        - /tmp/devopsctl
+        - /home/devopsctl/work
+      denied_paths:
+        - /etc
+        - /usr
+        - /root
+    process:
+      denied_executables:
+        - rm
+        - dd
+        - mkfs
+      resource_limits:
+        max_memory_mb: 512
+        max_processes: 10
+    network:
+      allow_network: false
+      scope: none
+    audit:
+      level: standard
+      log_stdout: true
+      log_stderr: true
+
+  - name: application_manager
+    purpose: Application deployment and management
+    trust_level: medium
+    identity:
+      user: appuser
+      group: appuser
+    privilege:
+      allow_escalation: true
+      sudo_commands:
+        - /usr/bin/systemctl
+        - /usr/sbin/service
+      no_password: false
+    filesystem:
+      readable_paths:
+        - /opt
+        - /var/lib
+        - /etc
+      writable_paths:
+        - /opt/apps
+        - /var/lib/apps
+      denied_paths:
+        - /boot
+        - /root
+    process:
+      allowed_executables:
+        - /usr/bin/systemctl
+        - /usr/sbin/service
+        - /usr/bin/node
+        - /usr/bin/python3
+      resource_limits:
+        max_memory_mb: 2048
+        max_processes: 50
+    network:
+      allow_network: true
+      scope: internal
+    audit:
+      level: standard
+      log_stdout: true
+      log_stderr: true
+
+  - name: system_admin
+    purpose: System administration with full privileges
+    trust_level: high
+    identity:
+      user: root
+      group: root
+    privilege:
+      allow_escalation: true
+      sudo_commands:
+        - "*"
+      no_password: false
+    filesystem:
+      readable_paths:
+        - /
+      writable_paths:
+        - /etc
+        - /var
+        - /opt
+      denied_paths:
+        - /boot
+        - /proc/sys
+    process:
+      allowed_executables:
+        - /usr/bin/systemctl
+        - /usr/sbin/service
+        - /usr/bin/apt-get
+        - /usr/bin/yum
+        - /bin/bash
+      resource_limits:
+        max_memory_mb: 4096
+        max_processes: 100
+    network:
+      allow_network: true
+      scope: full
+    audit:
+      level: full
+      log_stdout: true
+      log_stderr: true
+      log_env: true

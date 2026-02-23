@@ -1,0 +1,37 @@
+contexts:
+  - name: safe_user_space
+    purpose: Safe user-space execution without privileges
+    trust_level: low
+    identity:
+      user: devopsctl
+      group: devopsctl
+    privilege:
+      allow_escalation: false
+    filesystem:
+      readable_paths:
+        - /tmp
+        - /var/tmp
+        - /home/devopsctl
+      writable_paths:
+        - /tmp/devopsctl
+        - /home/devopsctl/work
+      denied_paths:
+        - /etc
+        - /usr/bin
+        - /root
+    process:
+      denied_executables:
+        - rm
+        - dd
+        - mkfs
+        - fdisk
+      resource_limits:
+        max_memory_mb: 512
+        max_processes: 10
+    network:
+      allow_network: false
+      scope: none
+    audit:
+      level: standard
+      log_stdout: true
+      log_stderr: true

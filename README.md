@@ -435,6 +435,147 @@ node "deploy-all" {
 }
 ```
 
+## Execution Contexts
+
+Execution contexts define the security boundaries for primitive execution on agent machines. They specify who executes operations, with what privileges, on which resources, and how execution is audited.
+
+### What Are Execution Contexts?
+
+An execution context is a security envelope that answers:
+
+- **Who executes**: User and group identity
+- **With what privileges**: Escalation rules (sudo/runuser)
+- **On which resources**: Filesystem path restrictions
+- **Under which restrictions**: Process controls, network access
+- **How is it audited**: Logging verbosity and requirements
+
+Contexts are:
+- **Agent-owned**: Configured on the agent, not in DSL
+- **Primitive-bound**: Automatically selected based on primitive type
+- **Security-enforced**: All validations happen before execution
+- **Fully audited**: Every execution logged with context metadata
+
+### Configuration
+
+Create a contexts YAML file with one or more execution contexts:
+
+```yaml
+contexts:
+  - name: safe_user_space
+    purpose: Safe operations without privileges
+    trust_level: low
+    identity:
+      user: devopsctl
+      group: devopsctl
+    privilege:
+      allow_escalation: false
+    filesystem:
+      readable_paths:
+        - /tmp
+        - /home/devopsctl
+      writable_paths:
+        - /tmp/devopsctl
+        - /home/devopsctl/work
+      denied_paths:
+        - /etc
+        - /usr/bin
+    process:
+      denied_executables:
+        - rm
+        - dd
+      resource_limits:
+        max_memory_mb: 512
+        max_processes: 10
+    network:
+      allow_network: false
+      scope: none
+    audit:
+      level: standard
+      log_stdout: true
+      log_stderr: true
+```
+
+Start the agent with the contexts configuration:
+
+```bash
+devopsctl agent --addr :7700 --contexts /etc/devopsctl/contexts.yaml
+```
+
+### Example Configurations
+
+Example context configurations are provided in [`examples/contexts/`](examples/contexts/):
+
+- **minimal.yaml**: Single safe user context for basic operations
+- **multi-tier.yaml**: Low/medium/high trust contexts for different security levels
+- **production.yaml**: Hardened production context with strict restrictions
+
+### Context Properties
+
+#### Identity
+- `user`: Execution username (required)
+- `group`: Primary group
+- `groups`: Supplementary groups
+
+#### Privilege
+- `allow_escalation`: Enable sudo/privilege escalation
+- `sudo_commands`: Allowed commands when escalation is enabled
+- `no_password`: Use NOPASSWD sudo (security risk)
+
+#### Filesystem
+- `readable_paths`: Paths that can be read
+- `writable_paths`: Paths that can be written
+- `denied_paths`: Explicitly denied paths (highest priority)
+
+#### Process
+- `allowed_executables`: Whitelist of executables (empty = all allowed)
+- `denied_executables`: Blacklist of executables
+- `environment`: Enforced environment variables
+- `resource_limits`: Memory, CPU, and process limits
+
+#### Network
+- `allow_network`: Enable/disable network access
+- `allowed_ports`: Specific port restrictions
+- `scope`: "none", "internal", or "full"
+
+#### Audit
+- `level`: "minimal", "standard", or "full"
+- `log_stdout`: Log command stdout
+- `log_stderr`: Log command stderr
+- `log_env`: Log environment variables
+
+### Audit Logging
+
+Audit logs are written in JSON lines format to the configured audit log file (default: `/var/log/devopsctl-audit.log`). Each execution produces a structured audit entry with:
+
+- Timestamp, node ID, primitive type
+- Context name, execution user, trust level
+- Command details (based on audit level)
+- Exit code, status (success/failed/denied)
+- Stdout/stderr (if configured)
+- Execution duration
+- Error messages (if any)
+
+Audit logs can be analyzed using standard JSON processing tools:
+
+```bash
+# View recent executions
+tail -f /var/log/devopsctl-audit.log | jq .
+
+# Find failed executions
+jq 'select(.status == "failed")' /var/log/devopsctl-audit.log
+
+# List all contexts used
+jq -r '.context_name' /var/log/devopsctl-audit.log | sort | uniq
+```
+
+### Security Best Practices
+
+1. **Principle of Least Privilege**: Use the lowest trust level and most restrictive context for each operation
+2. **Explicit Deny**: Use `denied_paths` and `denied_executables` to explicitly block dangerous operations
+3. **Audit Everything**: Use `audit.level: full` in production for complete traceability
+4. **Validate Contexts**: Test context configurations thoroughly before deploying to production
+5. **Monitor Audit Logs**: Regularly review audit logs for suspicious activity or denied operations
+
 ## Architecture
 
 devopsctl follows a compile-to-primitives architecture:

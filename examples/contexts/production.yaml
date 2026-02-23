@@ -1,0 +1,42 @@
+contexts:
+  - name: safe_user_space
+    purpose: Production-hardened user-space execution
+    trust_level: low
+    identity:
+      user: devopsctl
+      group: devopsctl
+    privilege:
+      allow_escalation: false
+    filesystem:
+      readable_paths:
+        - /tmp/devopsctl
+        - /var/lib/devopsctl
+      writable_paths:
+        - /tmp/devopsctl
+        - /var/lib/devopsctl/work
+      denied_paths:
+        - /etc
+        - /usr
+        - /root
+        - /home
+        - /var/log
+    process:
+      denied_executables:
+        - rm
+        - dd
+        - mkfs
+        - fdisk
+        - parted
+        - mount
+        - umount
+      resource_limits:
+        max_memory_mb: 256
+        max_processes: 5
+    network:
+      allow_network: false
+      scope: none
+    audit:
+      level: full
+      log_stdout: true
+      log_stderr: true
+      log_env: true
