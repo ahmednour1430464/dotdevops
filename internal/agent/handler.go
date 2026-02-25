@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os/exec"
 	"time"
 
 	agentcontext "devopsctl/internal/agent/context"
@@ -175,18 +176,21 @@ func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[st
 		AuditLogger:   auditLogger,
 	}
 
-	cmdArrRaw, ok := inputs["cmd"].([]any)
-	if !ok || len(cmdArrRaw) == 0 {
+	var cmdArgs []string
+	if cmdArrRaw, ok := inputs["cmd"].([]any); ok {
+		for _, a := range cmdArrRaw {
+			cmdArgs = append(cmdArgs, fmt.Sprint(a))
+		}
+	} else if cmdArrStr, ok := inputs["cmd"].([]string); ok {
+		cmdArgs = cmdArrStr
+	}
+
+	if len(cmdArgs) == 0 {
 		return proto.Result{
 			Status:       "failed",
 			RollbackSafe: false,
 			Stderr:       "invalid or missing 'cmd' array",
 		}
-	}
-
-	var cmdArgs []string
-	for _, a := range cmdArrRaw {
-		cmdArgs = append(cmdArgs, fmt.Sprint(a))
 	}
 
 	cwd, _ := inputs["cwd"].(string)
@@ -211,12 +215,17 @@ func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[st
 	}
 
 	if err != nil {
-		res.Status = "failed"
-		res.Class = "context_enforcement_error"
-		if res.Stderr != "" {
-			res.Stderr += "\n"
+		if _, ok := err.(*exec.ExitError); ok {
+			res.Status = "failed"
+			res.Class = "execution_error"
+		} else {
+			res.Status = "failed"
+			res.Class = "context_enforcement_error"
+			if res.Stderr != "" {
+				res.Stderr += "\n"
+			}
+			res.Stderr += err.Error()
 		}
-		res.Stderr += err.Error()
 	} else if result != nil && result.ExitCode == 0 {
 		res.Status = "success"
 	} else {
@@ -239,10 +248,35 @@ func handleRollback(raw []byte, enc *json.Encoder,
 	req := full.RollbackReq
 
 	if req.Primitive == "process.exec" {
+		if len(req.RollbackCmd) == 0 {
+			_ = enc.Encode(proto.RollbackResp{
+				Type:   "rollback_resp",
+				NodeID: req.NodeID,
+				Result: proto.Result{Status: "failed", RollbackSafe: false, Message: "process.exec has no rollback_cmd defined"},
+			})
+			return
+		}
+
+		// Identify execution context
+		ctx, err := agentcontext.ResolveContext(req.Primitive, contexts)
+		if err != nil {
+			writeError(enc, "rollback_resp", req.NodeID, 
+				fmt.Errorf("context resolution: %w", err))
+			return
+		}
+
+		// Wrap RollbackCmd as Inputs for executeProcessWithContext
+		rollbackInputs := map[string]any{
+			"cmd":     req.RollbackCmd,
+			"cwd":     full.Inputs["cwd"],
+			"timeout": full.Inputs["timeout"],
+		}
+
+		res := executeProcessWithContext(ctx, rollbackInputs, req.NodeID, auditLogger)
 		_ = enc.Encode(proto.RollbackResp{
 			Type:   "rollback_resp",
 			NodeID: req.NodeID,
-			Result: proto.Result{Status: "failed", RollbackSafe: false, Message: "process.exec cannot be rolled back"},
+			Result: res,
 		})
 		return
 	}

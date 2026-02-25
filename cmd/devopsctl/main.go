@@ -18,7 +18,7 @@ import (
 	"devopsctl/internal/state"
 )
 
-const version = "0.6.0-dev"
+const version = "0.7.0-dev"
 
 func main() {
 	root := &cobra.Command{
@@ -32,6 +32,9 @@ func main() {
 	var parallelism int
 	var resume bool
 	var applyLang string
+	var applyTLSCert string
+	var applyTLSKey string
+	var applyTLSCA string
 
 	applyCmd := &cobra.Command{
 		Use:   "apply <plan>",
@@ -50,26 +53,14 @@ func main() {
 				if readErr != nil {
 					return fmt.Errorf("read source: %w", readErr)
 				}
+				if applyLang != "v0.3" {
+					fmt.Fprintf(os.Stderr, "⚠️  WARNING: --lang flag is deprecated. Use 'version = \"%s\"' directive inside %s instead.\n", applyLang, planPath)
+				}
 				var (
 					res     *devlang.CompileResult
 					compErr error
 				)
-				switch applyLang {
-				case "", "v0.3":
-					res, compErr = devlang.CompileFileV0_3(planPath, src)
-				case "v0.6":
-					res, compErr = devlang.CompileFileV0_6(planPath, src)
-				case "v0.5":
-					res, compErr = devlang.CompileFileV0_5(planPath, src)
-				case "v0.4":
-					res, compErr = devlang.CompileFileV0_4(planPath, src)
-				case "v0.2":
-					res, compErr = devlang.CompileFileV0_2(planPath, src)
-				case "v0.1":
-					res, compErr = devlang.CompileFileV0_1(planPath, src)
-				default:
-					return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5, v0.6)", applyLang)
-				}
+				res, compErr = devlang.CompileFileAutoDetect(planPath, src, applyLang)
 				if compErr != nil {
 					return fmt.Errorf("compile .devops: %w", compErr)
 				}
@@ -102,6 +93,9 @@ func main() {
 				DryRun:      dryRun,
 				Parallelism: parallelism,
 				Resume:      resume,
+				TLSCertPath:  applyTLSCert,
+				TLSKeyPath:   applyTLSKey,
+				TLSCAPath:    applyTLSCA,
 			})
 		},
 	}
@@ -109,11 +103,17 @@ func main() {
 	applyCmd.Flags().IntVar(&parallelism, "parallelism", 10, "Max concurrent node executions")
 	applyCmd.Flags().BoolVar(&resume, "resume", false, "Safely resume execution from the previous failure point")
 	applyCmd.Flags().StringVar(&applyLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
+	applyCmd.Flags().StringVar(&applyTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
+	applyCmd.Flags().StringVar(&applyTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
+	applyCmd.Flags().StringVar(&applyTLSCA, "tls-ca", "", "Path to CA certificate for mTLS")
 
 	// ── devopsctl reconcile ───────────────────────────────────────────────────
 	var recDryRun bool
 	var recParallelism int
 	var recLang string
+	var recTLSCert string
+	var recTLSKey string
+	var recTLSCA string
 
 	reconcileCmd := &cobra.Command{
 		Use:   "reconcile <plan>",
@@ -131,26 +131,14 @@ func main() {
 				if readErr != nil {
 					return fmt.Errorf("read source: %w", readErr)
 				}
+				if recLang != "v0.3" {
+					fmt.Fprintf(os.Stderr, "⚠️  WARNING: --lang flag is deprecated. Use 'version = \"%s\"' directive inside %s instead.\n", recLang, planPath)
+				}
 				var (
 					res     *devlang.CompileResult
 					compErr error
 				)
-				switch recLang {
-				case "", "v0.3":
-					res, compErr = devlang.CompileFileV0_3(planPath, src)
-				case "v0.6":
-					res, compErr = devlang.CompileFileV0_6(planPath, src)
-				case "v0.5":
-					res, compErr = devlang.CompileFileV0_5(planPath, src)
-				case "v0.4":
-					res, compErr = devlang.CompileFileV0_4(planPath, src)
-				case "v0.2":
-					res, compErr = devlang.CompileFileV0_2(planPath, src)
-				case "v0.1":
-					res, compErr = devlang.CompileFileV0_1(planPath, src)
-				default:
-					return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5, v0.6)", recLang)
-				}
+				res, compErr = devlang.CompileFileAutoDetect(planPath, src, recLang)
 				if compErr != nil {
 					return fmt.Errorf("compile .devops: %w", compErr)
 				}
@@ -183,17 +171,26 @@ func main() {
 				DryRun:      recDryRun,
 				Parallelism: recParallelism,
 				Reconcile:   true,
+				TLSCertPath:  recTLSCert,
+				TLSKeyPath:   recTLSKey,
+				TLSCAPath:    recTLSCA,
 			})
 		},
 	}
 	reconcileCmd.Flags().BoolVar(&recDryRun, "dry-run", false, "Show diff without applying changes")
 	reconcileCmd.Flags().IntVar(&recParallelism, "parallelism", 10, "Max concurrent node executions")
 	reconcileCmd.Flags().StringVar(&recLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
+	reconcileCmd.Flags().StringVar(&recTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
+	reconcileCmd.Flags().StringVar(&recTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
+	reconcileCmd.Flags().StringVar(&recTLSCA, "tls-ca", "", "Path to CA certificate for mTLS")
 
 	// ── devopsctl agent ───────────────────────────────────────────────────────
 	var agentAddr string
 	var agentContextsPath string
 	var agentAuditLog string
+	var agentTLSCert string
+	var agentTLSKey string
+	var agentTLSCA string
 
 	agentCmd := &cobra.Command{
 		Use:   "agent",
@@ -202,11 +199,20 @@ func main() {
 			if agentContextsPath == "" {
 				return fmt.Errorf("--contexts flag is required")
 			}
+			
+			if agentTLSCert == "" || agentTLSKey == "" {
+				// Always print security warning if mTLS is disabled
+				fmt.Fprintln(os.Stderr, "⚠️  SECURITY WARNING: Running agent without mTLS enabled")
+				fmt.Fprintln(os.Stderr, "   Execute commands from untrusted controllers may occur. Use in isolated networks only.")
+			}
 
 			srv := &agent.Server{
 				Addr:         agentAddr,
 				ContextsPath: agentContextsPath,
 				AuditLogPath: agentAuditLog,
+				TLSCertPath:  agentTLSCert,
+				TLSKeyPath:   agentTLSKey,
+				TLSCAPath:    agentTLSCA,
 			}
 			return srv.ListenAndServe()
 		},
@@ -216,6 +222,9 @@ func main() {
 		"Path to execution contexts config file (REQUIRED)")
 	agentCmd.Flags().StringVar(&agentAuditLog, "audit-log", "/var/log/devopsctl-audit.log", 
 		"Path to audit log file")
+	agentCmd.Flags().StringVar(&agentTLSCert, "tls-cert", "", "Path to TLS certificate for agent mTLS")
+	agentCmd.Flags().StringVar(&agentTLSKey, "tls-key", "", "Path to TLS key for agent mTLS")
+	agentCmd.Flags().StringVar(&agentTLSCA, "tls-ca", "", "Path to CA certificate for agent mTLS")
 
 	// ── devopsctl state list ──────────────────────────────────────────────────
 	var stateNode string
@@ -281,26 +290,14 @@ func main() {
 			if err != nil {
 				return err
 			}
+			if buildLang != "v0.3" {
+				fmt.Fprintf(os.Stderr, "⚠️  WARNING: --lang flag is deprecated. Use 'version = \"%s\"' directive inside %s instead.\n", buildLang, path)
+			}
 			var (
 				res     *devlang.CompileResult
 				compErr error
 			)
-			switch buildLang {
-			case "", "v0.3":
-				res, compErr = devlang.CompileFileV0_3(path, src)
-			case "v0.6":
-				res, compErr = devlang.CompileFileV0_6(path, src)
-			case "v0.5":
-				res, compErr = devlang.CompileFileV0_5(path, src)
-			case "v0.4":
-				res, compErr = devlang.CompileFileV0_4(path, src)
-			case "v0.2":
-				res, compErr = devlang.CompileFileV0_2(path, src)
-			case "v0.1":
-				res, compErr = devlang.CompileFileV0_1(path, src)
-			default:
-				return fmt.Errorf("unknown language version %q (supported: v0.1, v0.2, v0.3, v0.4, v0.5, v0.6)", buildLang)
-			}
+			res, compErr = devlang.CompileFileAutoDetect(path, src, buildLang)
 			if compErr != nil {
 				return fmt.Errorf("compile .devops: %w", compErr)
 			}
@@ -326,6 +323,9 @@ func main() {
 
 	// ── devopsctl rollback ────────────────────────────────────────────────────
 	var rollbackLast bool
+	var rollbackTLSCert string
+	var rollbackTLSKey string
+	var rollbackTLSCA string
 	rollbackCmd := &cobra.Command{
 		Use:   "rollback",
 		Short: "Rollback the last execution",
@@ -339,12 +339,81 @@ func main() {
 			}
 			defer store.Close()
 
-			return controller.RollbackLast(store)
+			return controller.RollbackLast(store, controller.RunOptions{
+				TLSCertPath: rollbackTLSCert,
+				TLSKeyPath:  rollbackTLSKey,
+				TLSCAPath:   rollbackTLSCA,
+			})
 		},
 	}
 	rollbackCmd.Flags().BoolVar(&rollbackLast, "last", false, "Rollback the most recent execution")
+	rollbackCmd.Flags().StringVar(&rollbackTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
+	rollbackCmd.Flags().StringVar(&rollbackTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
+	rollbackCmd.Flags().StringVar(&rollbackTLSCA, "tls-ca", "", "Path to CA certificate for mTLS")
 
-	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd)
+	// ── devopsctl observe ─────────────────────────────────────────────────────
+	var obsParallelism int
+	var obsLang string
+	var obsTLSCert string
+	var obsTLSKey string
+	var obsTLSCA string
+
+	observeCmd := &cobra.Command{
+		Use:   "observe <plan>",
+		Short: "Observe reality against the plan without making changes",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			planPath := args[0]
+			var (
+				p       *plan.Plan
+				rawPlan []byte
+			)
+			if filepath.Ext(planPath) == ".devops" {
+				src, err := os.ReadFile(planPath)
+				if err != nil {
+					return err
+				}
+				res, err := devlang.CompileFileAutoDetect(planPath, src, obsLang)
+				if err != nil {
+					return err
+				}
+				if len(res.Errors) > 0 {
+					for _, e := range res.Errors {
+						fmt.Fprintln(os.Stderr, "  ✗", e)
+					}
+					return fmt.Errorf("compile failed")
+				}
+				p = res.Plan
+				rawPlan = res.RawJSON
+			} else {
+				var err error
+				p, rawPlan, err = plan.Load(planPath)
+				if err != nil {
+					return err
+				}
+			}
+			store, err := state.Open()
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			return controller.Run(p, rawPlan, store, controller.RunOptions{
+				Parallelism: obsParallelism,
+				Observe:     true,
+				TLSCertPath:  obsTLSCert,
+				TLSKeyPath:   obsTLSKey,
+				TLSCAPath:    obsTLSCA,
+			})
+		},
+	}
+	observeCmd.Flags().IntVar(&obsParallelism, "parallelism", 10, "Max concurrent observations")
+	observeCmd.Flags().StringVar(&obsLang, "lang", "v0.3", "Language version (deprecated, use 'version' directive)")
+	observeCmd.Flags().StringVar(&obsTLSCert, "tls-cert", "", "Path to client TLS certificate")
+	observeCmd.Flags().StringVar(&obsTLSKey, "tls-key", "", "Path to client TLS key")
+	observeCmd.Flags().StringVar(&obsTLSCA, "tls-ca", "", "Path to CA certificate")
+
+	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

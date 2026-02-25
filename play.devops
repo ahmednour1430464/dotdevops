@@ -1,0 +1,25 @@
+version = "v0.6"
+
+node "check figlet" {
+    type = process.exec
+    targets = [hrdemo,]
+    cmd = ["which", "figlet"]
+    cwd = "/tmp"
+    failure_policy = continue
+}
+
+node "install figlet" {
+    type = process.exec
+    targets = [hrdemo,]
+    depends_on = ["check figlet"]
+    cmd = ["sh", "-c", "which figlet || sudo apt install -y figlet"]
+    cwd = "/tmp"
+}
+
+node "run figlet" {
+  type    = process.exec
+  targets = [hrdemo,]
+  depends_on = ["install figlet"]
+  cmd = ["/usr/bin/figlet","ahmed"]
+  cwd = "/tmp"
+}

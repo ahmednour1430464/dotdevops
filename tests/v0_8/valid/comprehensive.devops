@@ -1,0 +1,62 @@
+version = "v0.8"
+
+target "web1" {
+    address = "1.1.1.1:7700"
+    labels = {
+        role = "web"
+        env  = "prod"
+    }
+}
+
+target "web2" {
+    address = "1.1.1.2:7700"
+    labels = {
+        role = "web"
+        env  = "prod"
+    }
+}
+
+target "db1" {
+    address = "2.2.2.2:7700"
+    labels = {
+        role = "db"
+        env  = "prod"
+    }
+}
+
+fleet "web_fleet" {
+    match = {
+        role = "web"
+    }
+}
+
+// Node using a fleet and contracts
+node "app_deploy" {
+    type    = process.exec
+    targets = [web_fleet]
+
+    cmd = ["./deploy.sh"]
+    cwd = "."
+    
+    idempotent   = true
+    side_effects = "external"
+    retry = {
+        attempts = 3
+        delay    = "10s"
+    }
+    rollback_cmd = ["./rollback_deploy.sh"]
+}
+
+// Node using a direct target and limited contracts
+node "db_migrate" {
+    type    = process.exec
+    targets = [db1]
+    
+    cmd = ["./migrate.sh"]
+    cwd = "."
+    
+    side_effects = "local"
+    retry = {
+        attempts = 1
+    }
+}

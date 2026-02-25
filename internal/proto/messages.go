@@ -36,8 +36,9 @@ type ApplyReq struct {
 type RollbackReq struct {
 	Type      string `json:"type"` // "rollback_req"
 	NodeID    string `json:"node_id"`
-	Primitive string `json:"primitive"`
-	PlanHash  string `json:"plan_hash"`
+	Primitive   string   `json:"primitive"`
+	PlanHash    string   `json:"plan_hash"`
+	RollbackCmd []string `json:"rollback_cmd,omitempty"`
 }
 
 // ChunkMsg carries one fragment of a file being streamed to the agent.

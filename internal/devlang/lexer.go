@@ -12,6 +12,7 @@ const (
 	IDENT  // foo, file.sync
 	STRING // "..."
 	BOOL   // true, false
+	NUMBER // 123
 
 	// Keywords
 	KW_TARGET
@@ -22,6 +23,8 @@ const (
 	KW_FOR
 	KW_IN
 	KW_PARAM
+	KW_VERSION // v0.7: self-declared version directive
+	KW_FLEET   // v0.8: named group of targets by label selector
 
 	// Operators & punctuation
 	EQUAL     // =
@@ -133,6 +136,10 @@ func (l *Lexer) NextToken() Token {
 		return l.readString()
 	}
 
+	if isDigit(ch) {
+		return l.readNumber()
+	}
+
 	if isLetter(ch) || ch == '_' {
 		return l.readIdentOrKeyword()
 	}
@@ -140,6 +147,15 @@ func (l *Lexer) NextToken() Token {
 	// Unknown character
 	l.advance()
 	return Token{Type: ILLEGAL, Lexeme: string(ch), Pos: startPos}
+}
+
+func (l *Lexer) readNumber() Token {
+	startPos := Position{Line: l.line, Col: l.col}
+	start := l.pos
+	for isDigit(l.peek()) {
+		l.advance()
+	}
+	return Token{Type: NUMBER, Lexeme: string(l.src[start:l.pos]), Pos: startPos}
 }
 
 func (l *Lexer) peek() rune {
@@ -275,6 +291,10 @@ func (l *Lexer) readIdentOrKeyword() Token {
 		return Token{Type: KW_IN, Lexeme: lexeme, Pos: startPos}
 	case "param":
 		return Token{Type: KW_PARAM, Lexeme: lexeme, Pos: startPos}
+	case "version":
+		return Token{Type: KW_VERSION, Lexeme: lexeme, Pos: startPos}
+	case "fleet":
+		return Token{Type: KW_FLEET, Lexeme: lexeme, Pos: startPos}
 	case "true", "false":
 		return Token{Type: BOOL, Lexeme: lexeme, Pos: startPos}
 	}

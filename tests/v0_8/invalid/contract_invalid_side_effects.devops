@@ -1,0 +1,10 @@
+version = "v0.8"
+
+target "srv" { address = "1.1.1.1:7700" }
+
+node "invalid_side_effects" {
+    type = process.exec
+    targets = [srv]
+    cmd = ["ls"]
+    side_effects = "invalid_value"
+}

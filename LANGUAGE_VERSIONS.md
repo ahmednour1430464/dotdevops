@@ -152,29 +152,40 @@ Any further additions should **compose on top**, not mutate existing semantics.
 
 ---
 
-## Future Versions (Planned)
+---
 
-### v0.7 — Step Libraries (Imports) 🚧 NEXT
+### v0.7 — Step Libraries (Imports) ✅ FROZEN
 
-**Status:** Planned  
-**Target:** Q2 2026
+**Status:** Stable, Production-Ready  
+**Release:** February 2026
 
-#### Proposed Features
+#### Features
 - **Import mechanism** — Load steps from external `.devops` files
-- **Namespacing** — Prevent name collisions across libraries
-- **Deterministic resolution** — Imports resolve at compile time
+- **Namespacing** — Prevent name collisions across libraries via file-scoped resolution
+- **Deterministic resolution** — Imports resolve at compile time, sorted by path
+- **Circular detection** — Prevents infinite import loops
 
-#### Why Next?
-- v0.6 completes parameterized steps
-- Libraries enable code reuse across projects
-- Natural evolution: local steps → parameterized steps → importable step libraries
+#### Philosophy
+Enabled modular architecture. Projects can now maintain canonical step libraries shared across multiple deployment plans.
 
 ---
 
-### v0.8 — Multi-File Projects 🔮 FUTURE
+### v0.8 — Fleets & Node Contracts ✅ FROZEN
 
-**Status:** Future Consideration  
-**Target:** Q3 2026
+**Status:** Stable, Production-Ready  
+**Release:** February 2026
+
+#### Features
+- **Target Metadata** — Arbitrary key-value labels on targets
+- **Fleets** — Select targets via label queries (`match = { role = "web" }`)
+- **Node Contracts** — Stricter execution guarantees:
+  - `idempotent = true` (safe to retry)
+  - `side_effects = "none|local|external"` (impact level)
+  - `retry = { attempts = N, delay = "Ts" }` (orchestrator-level retries)
+  - `rollback_cmd = [...]` (inverse operation for `process.exec`)
+
+#### Philosophy
+Integrated **fleet management** and **governance contracts** into the core language. The orchestrator now uses these contracts to automate failure recovery and rollback.
 
 ---
 
@@ -242,6 +253,6 @@ Breaking changes will only occur across major versions (1.0, 2.0, etc.).
 
 ---
 
-**Last Updated:** February 22, 2026  
-**Current Stable Version:** v0.6  
-**Next Version:** v0.7 (Step Libraries)
+**Last Updated:** February 25, 2026  
+**Current Stable Version:** v0.8  
+**Next Version:** v0.9 (Project Scoping)

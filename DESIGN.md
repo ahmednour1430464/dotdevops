@@ -313,9 +313,10 @@ If a bug violates these invariants, it's a **critical bug** that must be fixed i
 | v0.2 | Let bindings | ✅ Frozen |
 | v0.3 | Expression evaluation (ternary, operators) | ✅ Frozen |
 | v0.4 | Reusable steps (macro expansion) | ✅ Frozen |
-| v0.5 | Nested steps, For-loops | 🔧 In Design |
-| v0.6 | Step parameters | 🔧 In Design |
-| v0.7 | Step libraries (imports) | 🔧 In Design |
+| v0.5 | Nested steps, For-loops | ✅ Frozen |
+| v0.6 | Step parameters | ✅ Frozen |
+| v0.7 | Step libraries (imports) | ✅ Stable |
+| v0.8 | Fleets, Node Contracts, Metadata | ✅ Stable |
 
 ---
 

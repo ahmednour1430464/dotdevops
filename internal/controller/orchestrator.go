@@ -14,6 +14,9 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"crypto/tls"
+	"crypto/x509"
+	"io/ioutil"
 
 	"devopsctl/internal/plan"
 	"devopsctl/internal/primitive/filesync"
@@ -29,6 +32,11 @@ type RunOptions struct {
 	Parallelism int // 0 = unlimited
 	Resume      bool
 	Reconcile   bool
+	Observe     bool
+	
+	TLSCertPath string
+	TLSKeyPath  string
+	TLSCAPath   string
 }
 
 // Run executes a plan file end-to-end using the execution graph.
@@ -102,13 +110,9 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 				isBlocked := false
 				for _, depID := range node.DependsOn {
 					st := nodeStates[depID]
-					if st == "failed" || st == "blocked" {
+					if st == "failed" || st == "skipped" {
 						cascadeSkip = true
 						isBlocked = true
-						break
-					}
-					if st == "skipped" {
-						cascadeSkip = true
 						break
 					}
 				}
@@ -126,7 +130,7 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 				if cascadeSkip {
 					mu.Lock()
 					if isBlocked {
-						nodeStates[id] = "blocked"
+						nodeStates[id] = "skipped"
 					} else {
 						nodeStates[id] = "skipped"
 					}
@@ -141,9 +145,9 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 							}
 							inputsWithAddr["__target_addr"] = target.Address
 							nodeHash := node.Hash(target.ID)
-							_ = store.Record(node.ID, target.ID, planHash, nodeHash, "skipped_cs", recStatus, proto.ChangeSet{}, inputsWithAddr)
+							_ = store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, "skipped_cs", recStatus, proto.ChangeSet{}, inputsWithAddr)
 							if isBlocked {
-								fmt.Printf("[%s → %s] blocked (dependency failed)\n", node.ID, target.ID)
+								fmt.Printf("[%s → %s] skipped (dependency failed)\n", node.ID, target.ID)
 							} else {
 								fmt.Printf("[%s → %s] skipped (dependency or condition)\n", node.ID, target.ID)
 							}
@@ -184,14 +188,23 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 						isReconciled := false
 						
 						if err == nil && latest != nil {
-							if opts.Resume && latest.PlanHash == planHash {
-								if latest.Status == "applied" {
-									isResumable = true
-								}
+							// 1. Resume logic: history-based skip for speed/correctness of interrupted runs
+							if opts.Resume && latest.PlanHash == planHash && latest.Status == "applied" {
+								isResumable = true
 							}
-							if opts.Reconcile {
-								if latest.Status == "applied" && latest.NodeHash == nodeHash {
-									isReconciled = true
+
+							// 2. Reconcile / Apply logic:
+							// v0.8: Both apply and reconcile are now effectively "probed" for file.sync.
+							// For process.exec, we still allow history-based skip if not idempotent to avoid unwanted side effects.
+							if opts.Reconcile || !opts.Resume {
+								if node.Type == "file.sync" {
+									isReconciled = false // Always probe (standard apply or reconcile)
+								} else if node.Type == "process.exec" {
+									if latest.Status == "applied" && latest.NodeHash == nodeHash && !node.Idempotent {
+										isReconciled = true
+									} else {
+										isReconciled = false // Run if idempotent or hash changed
+									}
 								}
 							}
 						}
@@ -199,10 +212,7 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 						if isResumable {
 							fmt.Printf("[%s → %s] skipped (resumed)\n", node.ID, t.ID)
 							targetMu.Lock()
-							if latest != nil && totalChanges(latest.ChangeSet) > 0 {
-								anyChanged = true
-							}
-							if node.Type == "process.exec" {
+							if latest != nil && (totalChanges(latest.ChangeSet) > 0 || node.Type == "process.exec") {
 								anyChanged = true
 							}
 							targetMu.Unlock()
@@ -210,19 +220,44 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 						}
 
 						if isReconciled {
-							fmt.Printf("[%s → %s] ✓ up to date (reconciled)\n", node.ID, t.ID)
+							fmt.Printf("[%s → %s] ✓ up to date (reconciled from history)\n", node.ID, t.ID)
 							targetMu.Lock()
-							if latest != nil && totalChanges(latest.ChangeSet) > 0 {
-								anyChanged = true
-							}
-							if node.Type == "process.exec" {
+							if latest != nil && (totalChanges(latest.ChangeSet) > 0 || node.Type == "process.exec") {
 								anyChanged = true
 							}
 							targetMu.Unlock()
 							return
 						}
 
-						changed, err := runNode(ctx, node, t, planHash, nodeHash, store, opts)
+						// Wrap runNode with retry logic if configured
+						var changed bool
+						attempts := 1
+						if node.Retry != nil && node.Retry.Attempts > 1 {
+							attempts = node.Retry.Attempts
+						}
+
+						for a := 1; a <= attempts; a++ {
+							if a > 1 {
+								delay := 5 * time.Second
+								if node.Retry.Delay != "" {
+									if d, parseErr := time.ParseDuration(node.Retry.Delay); parseErr == nil {
+										delay = d
+									}
+								}
+								fmt.Printf("[%s → %s] retrying (%d/%d) after %v...\n", node.ID, t.ID, a, attempts, delay)
+								time.Sleep(delay)
+							}
+
+							changed, err = runNode(ctx, node, t, planHash, nodeHash, store, opts)
+							if err == nil {
+								break
+							}
+							
+							// If it's the last attempt, don't retry anymore
+							if a == attempts {
+								break
+							}
+						}
 						
 						targetMu.Lock()
 						if err != nil {
@@ -261,7 +296,7 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 
 				if len(nodeErrs) > 0 && failedPolicy == "rollback" && isHaltOrRollback {
 					fmt.Printf("[%s] triggering global rollback due to failed policy\n", node.ID)
-					_ = RollbackLast(store)
+					_ = RollbackLast(store, opts)
 				}
 
 				doneChan <- id
@@ -311,8 +346,7 @@ func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash, 
 }
 
 func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := dialAgent(ctx, addr, opts)
 	if err != nil {
 		return false, fmt.Errorf("connect to agent %s: %w", addr, err)
 	}
@@ -364,15 +398,20 @@ func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.T
 		return false, nil
 	}
 
-	if opts.DryRun {
-		fmt.Printf("[%s → %s] dry-run: %d change(s) would be applied\n",
-			node.ID, target.ID, totalChanges(cs))
+	if opts.DryRun || opts.Observe {
+		if opts.DryRun {
+			fmt.Printf("[%s → %s] dry-run: %d change(s) would be applied\n",
+				node.ID, target.ID, totalChanges(cs))
+		} else {
+			fmt.Printf("[%s → %s] observe: %d change(s) detected\n",
+				node.ID, target.ID, totalChanges(cs))
+		}
 		return true, nil
 	}
 
 	// ── Step 4: Apply ─────────────────────────────────────────────────────────
 	conn.Close()
-	conn, err = d.DialContext(ctx, "tcp", addr)
+	conn, err = dialAgent(ctx, addr, opts)
 	if err != nil {
 		return false, fmt.Errorf("re-connect for apply: %w", err)
 	}
@@ -423,7 +462,7 @@ func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.T
 		dbStatus = "applied"
 	}
 	
-	if err := store.Record(node.ID, target.ID, planHash, nodeHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
+	if err := store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
@@ -431,7 +470,7 @@ func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.T
 	if res.Status == "failed" {
 		if res.RollbackSafe {
 			fmt.Printf("[%s → %s] triggering agent-level rollback…\n", node.ID, target.ID)
-			if err := doRollback(addr, node, planHash, cs); err != nil {
+			if err := doRollback(addr, node, planHash, cs, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "WARN: rollback error: %v\n", err)
 			}
 		}
@@ -442,14 +481,17 @@ func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.T
 }
 
 func runProcessExec(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
-	if opts.DryRun {
+	if opts.DryRun || opts.Observe {
 		cmdArr, _ := node.Inputs["cmd"].([]any)
-		fmt.Printf("[%s → %s] dry-run: would execute %v\n", node.ID, target.ID, cmdArr)
+		if opts.DryRun {
+			fmt.Printf("[%s → %s] dry-run: would execute %v\n", node.ID, target.ID, cmdArr)
+		} else {
+			fmt.Printf("[%s → %s] observe: node execution required (idempotent=%v)\n", node.ID, target.ID, node.Idempotent)
+		}
 		return true, nil
 	}
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := dialAgent(ctx, addr, opts)
 	if err != nil {
 		return false, fmt.Errorf("connect to agent %s: %w", addr, err)
 	}
@@ -495,13 +537,16 @@ func runProcessExec(ctx context.Context, addr string, node plan.Node, target pla
 		inputsWithAddr[k] = v
 	}
 	inputsWithAddr["__target_addr"] = target.Address
+	if len(node.RollbackCmd) > 0 {
+		inputsWithAddr["__rollback_cmd"] = node.RollbackCmd
+	}
 	
 	dbStatus := res.Status
 	if dbStatus == "success" {
 		dbStatus = "applied"
 	}
 	
-	if err := store.Record(node.ID, target.ID, planHash, nodeHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
+	if err := store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
@@ -552,10 +597,13 @@ func streamFiles(srcRoot string, paths []string, enc *json.Encoder) error {
 }
 
 // doRollback sends a rollback_req to the agent.
-func doRollback(addr string, node plan.Node, planHash string, cs proto.ChangeSet) error {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+func doRollback(addr string, node plan.Node, planHash string, cs proto.ChangeSet, opts RunOptions) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := dialAgent(ctx, addr, opts)
 	if err != nil {
-		return err
+		return fmt.Errorf("connect for rollback: %w", err)
 	}
 	defer conn.Close()
 	r := bufio.NewReader(conn)
@@ -570,8 +618,9 @@ func doRollback(addr string, node plan.Node, planHash string, cs proto.ChangeSet
 		RollbackReq: proto.RollbackReq{
 			Type:      "rollback_req",
 			NodeID:    node.ID,
-			Primitive: node.Type,
-			PlanHash:  planHash,
+			Primitive:   node.Type,
+			PlanHash:    planHash,
+			RollbackCmd: node.RollbackCmd,
 		},
 		Inputs:    node.Inputs,
 		ChangeSet: cs,
@@ -579,7 +628,16 @@ func doRollback(addr string, node plan.Node, planHash string, cs proto.ChangeSet
 		return err
 	}
 	var resp proto.RollbackResp
-	return readJSON(r, &resp)
+	if err := readJSON(r, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("agent error: %s", resp.Error)
+	}
+	if resp.Result.Status == "failed" {
+		return fmt.Errorf("rollback failed: %s %s", resp.Result.Message, resp.Result.Stderr)
+	}
+	return nil
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -615,8 +673,7 @@ func hashChangeSet(cs proto.ChangeSet) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
-// RollbackLast fetches the most recent execution plan run and rolls back all successful file.sync nodes.
-func RollbackLast(store *state.Store) error {
+func RollbackLast(store *state.Store, opts RunOptions) error {
 	execs, err := store.LastRun()
 	if err != nil {
 		return fmt.Errorf("fetch last run: %w", err)
@@ -629,11 +686,23 @@ func RollbackLast(store *state.Store) error {
 		if ex.Status != "applied" && ex.Status != "partial" {
 			continue
 		}
-		// Construct a dummy node to pass into doRollback
+		// Use stored data to reconstruct a node for rollback
+		var rbCmd []string
+		if raw, ok := ex.Inputs["__rollback_cmd"]; ok {
+			if list, ok := raw.([]any); ok {
+				for _, it := range list {
+					rbCmd = append(rbCmd, fmt.Sprint(it))
+				}
+			} else if sl, ok := raw.([]string); ok {
+				rbCmd = sl
+			}
+		}
+
 		node := plan.Node{
-			ID:     ex.NodeID,
-			Type:   "file.sync", // assume filesync for now, process.exec is not rollbackable yet
-			Inputs: ex.Inputs,
+			ID:          ex.NodeID,
+			Type:        ex.PrimitiveType,
+			Inputs:      ex.Inputs,
+			RollbackCmd: rbCmd,
 		}
 
 		addrStr, _ := ex.Inputs["__target_addr"].(string)
@@ -641,12 +710,47 @@ func RollbackLast(store *state.Store) error {
 			addrStr = ex.Target
 		}
 		addr := addressWithPort(addrStr)
-		if err := doRollback(addr, node, ex.PlanHash, ex.ChangeSet); err != nil {
+		if err := doRollback(addr, node, ex.PlanHash, ex.ChangeSet, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "WARN: rollback failed for node %s on %s: %v\n", ex.NodeID, ex.Target, err)
 		} else {
 			fmt.Printf("[%s → %s] successfully rolled back\n", ex.NodeID, ex.Target)
-			_ = store.Record(ex.NodeID, ex.Target, ex.PlanHash, ex.NodeHash, "rollback_cs", "rolled_back", ex.ChangeSet, ex.Inputs)
+			_ = store.Record(ex.NodeID, ex.Target, ex.PrimitiveType, ex.PlanHash, ex.NodeHash, "rollback_cs", "rolled_back", ex.ChangeSet, ex.Inputs)
 		}
 	}
 	return nil
+}
+
+func dialAgent(ctx context.Context, addr string, opts RunOptions) (net.Conn, error) {
+	var d net.Dialer
+	if opts.TLSCertPath == "" || opts.TLSKeyPath == "" {
+		return d.DialContext(ctx, "tcp", addr)
+	}
+
+	// Load client cert
+	cert, err := tls.LoadX509KeyPair(opts.TLSCertPath, opts.TLSKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load client cert: %w", err)
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	// Load CA if provided
+	if opts.TLSCAPath != "" {
+		caCert, err := ioutil.ReadFile(opts.TLSCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("read ca cert: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+		config.RootCAs = caCertPool
+	}
+
+	tlsDialer := &tls.Dialer{
+		NetDialer: &d,
+		Config:    config,
+	}
+	return tlsDialer.DialContext(ctx, "tcp", addr)
 }

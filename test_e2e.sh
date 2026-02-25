@@ -22,7 +22,7 @@ echo "Building devopsctl..."
 go build -o devopsctl ./cmd/devopsctl
 
 echo "Starting Agent..."
-./devopsctl agent --addr :7700 &
+./devopsctl agent --addr :7700 --contexts ./examples/contexts/minimal.yaml --audit-log /tmp/devopsctl-audit.log &
 AGENT_PID=$!
 sleep 1 # wait for server to start
 
@@ -312,5 +312,95 @@ if ! ./devopsctl state list --node node_d | grep -q "skipped"; then
 fi
 
 echo "Assert passed: Graph topology, failures, and skips worked perfectly"
+
+echo "========================================================"
+echo "1️⃣1️⃣ observe command (v0.8+)"
+echo "drifted_again" > $WORKSPACE/src/index.html
+./devopsctl observe $WORKSPACE/plan.json > observe.log
+if grep -q "applied" observe.log; then
+  echo "❌ observe command should NOT apply changes"
+  exit 1
+fi
+if ! grep -q "drifted_again" $WORKSPACE/src/index.html; then
+   echo "Wait, src changed? Impossible."
+   exit 1
+fi
+if grep -q "drifted_again" $WORKSPACE/dest/index.html; then
+  echo "❌ observe command applied changes by mistake"
+  exit 1
+fi
+echo "Assert passed: observe command detected drift but did not apply"
+
+echo "========================================================"
+echo "1️⃣2️⃣ Retry logic (v0.8+)"
+FLAKEY="$WORKSPACE/flakey.sh"
+cat <<EOF > $FLAKEY
+#!/bin/bash
+COUNTER_FILE="/tmp/flakey_counter"
+GOAL=\$1
+if [ ! -f "\$COUNTER_FILE" ]; then
+    echo "1" > "\$COUNTER_FILE"
+    exit 1
+fi
+COUNT=\$(cat "\$COUNTER_FILE")
+if [ "\$COUNT" -lt "\$GOAL" ]; then
+    echo "\$((COUNT + 1))" > "\$COUNTER_FILE"
+    exit 1
+fi
+rm "\$COUNTER_FILE"
+exit 0
+EOF
+chmod +x $FLAKEY
+rm -f /tmp/flakey_counter
+
+# This node should fail 2 times and succeed on 3rd attempt.
+# With attempts = 3, it should pass.
+cat <<EOF > $WORKSPACE/retry_plan.devops
+version = "v0.8"
+target "local" { address = "127.0.0.1:7700" }
+node "retry_test" {
+    type = process.exec
+    targets = [local]
+    cmd = ["$FLAKEY", "2"]
+    cwd = "$WORKSPACE"
+    retry = {
+        attempts = 3
+        delay = "1s"
+    }
+}
+EOF
+
+./devopsctl apply $WORKSPACE/retry_plan.devops
+echo "Assert passed: Retry logic successfully handled transient failure"
+
+echo "========================================================"
+echo "1️⃣3️⃣ process.exec Rollback (v0.8+)"
+DEPLOY_MARKER="$WORKSPACE/deployed.txt"
+rm -f $DEPLOY_MARKER
+
+cat <<EOF > $WORKSPACE/rollback_plan.devops
+version = "v0.8"
+target "local" { address = "127.0.0.1:7700" }
+node "deploy_with_rollback" {
+    type = process.exec
+    targets = [local]
+    cmd = ["touch", "$DEPLOY_MARKER"]
+    cwd = "$WORKSPACE"
+    rollback_cmd = ["rm", "-f", "$DEPLOY_MARKER"]
+}
+EOF
+
+./devopsctl apply $WORKSPACE/rollback_plan.devops
+if [ ! -f $DEPLOY_MARKER ]; then
+  echo "❌ deployment failed"
+  exit 1
+fi
+
+./devopsctl rollback --last
+if [ -f $DEPLOY_MARKER ]; then
+  echo "❌ rollback failed to remove $DEPLOY_MARKER"
+  exit 1
+fi
+echo "Assert passed: process.exec rollback worked perfectly"
 
 echo "✅ ALL SCRIPTS PASSED (OR RAN WITHOUT FATAL ERRORS)"

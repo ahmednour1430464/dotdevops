@@ -1,0 +1,12 @@
+version = "v0.8"
+
+target "srv" { address = "1.1.1.1:7700" }
+
+node "invalid_retry" {
+    type = process.exec
+    targets = [srv]
+    cmd = ["ls"]
+    retry = {
+        attempts = 0 // attempts must be > 0
+    }
+}

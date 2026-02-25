@@ -636,6 +636,7 @@ go test ./...
 
 ```
 devopsctl/
+├── .qoder/                 # Editor integration & local tooling state (gitignored)
 ├── cmd/devopsctl/          # CLI entry point
 ├── internal/
 │   ├── agent/              # Agent server and handler

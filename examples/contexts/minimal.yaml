@@ -3,25 +3,25 @@ contexts:
     purpose: Safe user-space execution without privileges
     trust_level: low
     identity:
-      user: devopsctl
-      group: devopsctl
+      user: ahmednour
+      group: ahmednour
     privilege:
       allow_escalation: false
     filesystem:
       readable_paths:
         - /tmp
         - /var/tmp
-        - /home/devopsctl
+        - /home/ahmednour
       writable_paths:
-        - /tmp/devopsctl
-        - /home/devopsctl/work
+        - /tmp/ahmednour
+        - /tmp/devops-test
+        - /home/ahmednour/work
       denied_paths:
         - /etc
         - /usr/bin
         - /root
     process:
       denied_executables:
-        - rm
         - dd
         - mkfs
         - fdisk

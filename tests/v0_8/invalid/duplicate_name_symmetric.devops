@@ -1,0 +1,16 @@
+version = "v0.8"
+
+fleet "web" {
+    match = { role = "web" }
+}
+
+target "web" {
+    address = "1.2.3.4:7700"
+}
+
+node "test" {
+    type = process.exec
+    targets = [web]
+    cmd = ["ls"]
+    cwd = "."
+}

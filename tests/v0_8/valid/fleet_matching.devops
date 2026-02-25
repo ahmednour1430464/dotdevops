@@ -1,0 +1,22 @@
+version = "v0.8"
+
+target "srv1" {
+    address = "10.0.0.1:7700"
+    labels = { app = "api" rack = "a" }
+}
+
+target "srv2" {
+    address = "10.0.0.2:7700"
+    labels = { app = "api" rack = "b" }
+}
+
+fleet "api_rack_a" {
+    match = { app = "api" rack = "a" }
+}
+
+node "test" {
+    type = process.exec
+    targets = [api_rack_a]
+    cmd = ["ls"]
+    cwd = "."
+}

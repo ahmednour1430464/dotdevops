@@ -12,6 +12,9 @@ func evaluateExpr(e Expr, lets LetEnv, path string) (Expr, error) {
 	case *BoolLiteral:
 		return v, nil
 
+	case *NumberLiteral:
+		return v, nil
+
 	case *ListLiteral:
 		// Evaluate all elements
 		evaluatedElems := make([]Expr, len(v.Elems))

@@ -19,8 +19,8 @@ echo "  (Skipped - parser position lock needs refinement)"
 
 echo ""
 echo "=== v0.6 Hash Stability ==="
-hash1=$(./devopsctl plan build --lang=v0.6 tests/v0_6/hash_stability/param_with_default.devops 2>&1 | sha256sum | cut -d' ' -f1)
-hash2=$(./devopsctl plan build --lang=v0.6 tests/v0_6/hash_stability/param_manual_expansion.devops 2>&1 | sha256sum | cut -d' ' -f1)
+hash1=$(./devopsctl plan build --lang=v0.6 tests/v0_6/hash_stability/param_with_default.devops | sha256sum | cut -d' ' -f1)
+hash2=$(./devopsctl plan build --lang=v0.6 tests/v0_6/hash_stability/param_manual_expansion.devops | sha256sum | cut -d' ' -f1)
 
 echo "  param_with_default.devops hash: $hash1"
 echo "  param_manual_expansion.devops hash: $hash2"

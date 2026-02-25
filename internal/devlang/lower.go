@@ -2,6 +2,7 @@ package devlang
 
 import (
 	"fmt"
+	"sort"
 
 	"devopsctl/internal/plan"
 )
@@ -69,6 +70,8 @@ func lowerExpr(e Expr) (any, error) {
 	case *StringLiteral:
 		return v.Value, nil
 	case *BoolLiteral:
+		return v.Value, nil
+	case *NumberLiteral:
 		return v.Value, nil
 	case *ListLiteral:
 		out := make([]any, 0, len(v.Elems))
@@ -153,6 +156,8 @@ func lowerExprV0_2(e Expr, lets LetEnv) (any, error) {
 		return v.Value, nil
 	case *BoolLiteral:
 		return v.Value, nil
+	case *NumberLiteral:
+		return v.Value, nil
 	case *ListLiteral:
 		out := make([]any, 0, len(v.Elems))
 		for _, elem := range v.Elems {
@@ -172,6 +177,9 @@ func lowerExprV0_2(e Expr, lets LetEnv) (any, error) {
 			return nil, fmt.Errorf("internal error: cannot lower identifier %q as a value at %d:%d", v.Name, v.Pos().Line, v.Pos().Col)
 		}
 		return lowerExprV0_2(letExpr, lets)
+	case *SecretRef:
+		// Emits the sentinel JSON object {"__secret__": "KEY"}
+		return map[string]interface{}{"__secret__": v.Key}, nil
 	default:
 		return nil, fmt.Errorf("internal error: unsupported expression node in lowering")
 	}
@@ -862,8 +870,122 @@ func substituteParamsInExpr(expr Expr, paramEnv map[string]Expr) Expr {
 			Elems:   newElems,
 			PosInfo: e.PosInfo,
 		}
+	case *SecretRef:
+		// Secret keys shouldn't be parameterized usually, but if they are it's not supported yet
+		return expr
 	default:
 		// Literals (StringLiteral, BoolLiteral) are not substituted
 		return expr
 	}
 }
+
+// LowerToPlanV0_8 converts a validated AST (v0.8) into a plan.Plan IR.
+func LowerToPlanV0_8(file *File, lets LetEnv, steps map[string]*StepDecl, forLoops []*ForDecl, fleets map[string]*FleetDecl) (*plan.Plan, error) {
+	// First run v0.6 lower logic which handles lets, steps, and for loops
+	p, err := LowerToPlanV0_6(file, lets, steps, forLoops)
+	if err != nil {
+		return nil, err
+	}
+	
+	p.Version = "1.0"
+
+	// Gather Targets with v0.8 Labels support.
+	// Since LowerToPlanV0_6 already creates p.Targets, we just need to update it.
+	targetLabels := map[string]map[string]string{}
+	for _, decl := range file.Decls {
+		if t, ok := decl.(*TargetDecl); ok {
+			targetLabels[t.Name] = t.Labels
+		}
+	}
+	
+	// Update target labels in plan
+	for i := range p.Targets {
+		p.Targets[i].Labels = targetLabels[p.Targets[i].ID]
+	}
+
+	// Gather original Nodes to map contract fields
+	nodeMap := map[string]*NodeDecl{}
+	for _, decl := range file.Decls {
+		if n, ok := decl.(*NodeDecl); ok {
+			nodeMap[n.Name] = n
+		} else if s, ok := decl.(*StepDecl); ok {
+			// Step bodies (single NodeDecl in v0.6+)
+			if s.Body != nil {
+				nodeMap[s.Body.Name] = s.Body
+			}
+		}
+	}
+
+	// Re-map nodes for fleets and contracts
+	var finalNodes []plan.Node
+	for _, n := range p.Nodes {
+		// 1. Resolve Fleets
+		resolvedSet := map[string]bool{}
+		for _, tRef := range n.Targets {
+			if f, ok := fleets[tRef]; ok {
+				// Expand fleet
+				for _, t := range p.Targets {
+					isMatch := true
+					for k, v := range f.Match {
+						if t.Labels[k] != v {
+							isMatch = false
+							break
+						}
+					}
+					if isMatch {
+						resolvedSet[t.ID] = true
+					}
+				}
+			} else {
+				resolvedSet[tRef] = true
+			}
+		}
+		n.Targets = []string{}
+		for t := range resolvedSet {
+			n.Targets = append(n.Targets, t)
+		}
+		sort.Strings(n.Targets)
+
+		// 2. Map Contracts (if we can find the original decl)
+		// Try exact match (top-level nodes)
+		decl := nodeMap[n.ID]
+		if decl == nil {
+			// Try step prefix match (e.g. "step_name.node_name")
+			for k, v := range nodeMap {
+				if len(n.ID) > len(k)+1 && n.ID[len(n.ID)-len(k):] == k && n.ID[len(n.ID)-len(k)-1] == '.' {
+					decl = v
+					break
+				}
+			}
+		}
+
+		if decl != nil {
+			if decl.Idempotent != nil {
+				n.Idempotent = decl.Idempotent.Value
+			}
+			if decl.SideEffects != nil {
+				n.SideEffects = decl.SideEffects.Value
+			}
+			if decl.Retry != nil && decl.Retry.Attempts > 0 {
+				n.Retry = &plan.RetryConfig{
+					Attempts: decl.Retry.Attempts,
+					Delay:    decl.Retry.Delay,
+				}
+			}
+			if decl.RollbackCmd != nil {
+				for _, e := range decl.RollbackCmd.Elems {
+					if s, ok := e.(*StringLiteral); ok {
+						n.RollbackCmd = append(n.RollbackCmd, s.Value)
+					}
+				}
+			}
+		}
+
+		finalNodes = append(finalNodes, n)
+	}
+	
+	p.Nodes = finalNodes
+
+	return p, nil
+}
+

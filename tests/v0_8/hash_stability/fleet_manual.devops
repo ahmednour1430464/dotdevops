@@ -1,0 +1,22 @@
+version = "v0.8"
+
+target "web1" {
+    address = "1.1.1.1:7700"
+    labels = { role = "web" }
+}
+
+target "web2" {
+    address = "1.1.1.2:7700"
+    labels = { role = "web" }
+}
+
+fleet "web" {
+    match = { role = "web" }
+}
+
+node "app" {
+    type = process.exec
+    targets = [web1, web2]
+    cmd = ["ls"]
+    cwd = "."
+}

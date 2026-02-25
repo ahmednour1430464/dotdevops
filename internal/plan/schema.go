@@ -17,8 +17,15 @@ type Plan struct {
 
 // Target is a remote server the controller can dispatch to.
 type Target struct {
-	ID      string `json:"id"`
-	Address string `json:"address"` // host:port, e.g. "10.0.0.10:7700"
+	ID      string            `json:"id"`
+	Address string            `json:"address"` // host:port, e.g. "10.0.0.10:7700"
+	Labels  map[string]string `json:"labels,omitempty"`
+}
+
+// RetryConfig holds retry parameters for a node (v0.8+).
+type RetryConfig struct {
+	Attempts int    `json:"attempts"`
+	Delay    string `json:"delay"`
 }
 
 // Node is a single unit of work in the plan.
@@ -30,6 +37,12 @@ type Node struct {
 	When          *WhenCondition `json:"when,omitempty"`
 	FailurePolicy string         `json:"failure_policy,omitempty"`
 	Inputs        map[string]any `json:"inputs"`
+	
+	// v0.8+ node contracts
+	Idempotent  bool         `json:"idempotent,omitempty"`
+	SideEffects string       `json:"side_effects,omitempty"` // "none" | "local" | "external"
+	Retry       *RetryConfig `json:"retry,omitempty"`
+	RollbackCmd []string     `json:"rollback_cmd,omitempty"`
 }
 
 // WhenCondition represents conditional execution rules.
@@ -55,15 +68,23 @@ func Load(path string) (*Plan, []byte, error) {
 // this specific unit of execution within the plan.
 func (n *Node) Hash(targetID string) string {
 	type hashStruct struct {
-		Type   string         `json:"type"`
-		Target string         `json:"target"`
-		Inputs map[string]any `json:"inputs"`
+		Type        string         `json:"type"`
+		Target      string         `json:"target"`
+		Inputs      map[string]any `json:"inputs"`
+		Idempotent  bool           `json:"idempotent,omitempty"`
+		SideEffects string         `json:"side_effects,omitempty"`
+		Retry       *RetryConfig   `json:"retry,omitempty"`
+		RollbackCmd []string       `json:"rollback_cmd,omitempty"`
 	}
 	
 	hs := hashStruct{
-		Type:   n.Type,
-		Target: targetID,
-		Inputs: n.Inputs,
+		Type:        n.Type,
+		Target:      targetID,
+		Inputs:      n.Inputs,
+		Idempotent:  n.Idempotent,
+		SideEffects: n.SideEffects,
+		Retry:       n.Retry,
+		RollbackCmd: n.RollbackCmd,
 	}
 	
 	// json.Marshal reliably orders map keys

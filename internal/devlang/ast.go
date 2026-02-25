@@ -17,15 +17,41 @@ type File struct {
 	Decls []Decl
 }
 
+// VersionDecl represents `version = "v0.7"` — the self-declared language version (v0.7+).
+type VersionDecl struct {
+	Version string
+	PosInfo Position
+}
+
+func (d *VersionDecl) Pos() Position { return d.PosInfo }
+func (d *VersionDecl) declNode()     {}
+
 // TargetDecl represents `target "name" { ... }`.
 type TargetDecl struct {
 	Name    string
 	Address *StringLiteral
+	Labels  map[string]string // v0.8: metadata labels for fleet selection
 	PosInfo Position
 }
 
+// FleetDecl represents `fleet "name" { match = { key = "val" } }` — a named group of targets by label selector (v0.8+).
+type FleetDecl struct {
+	Name    string
+	Match   map[string]string // all key/value pairs must match target labels
+	PosInfo Position
+}
+
+func (d *FleetDecl) Pos() Position { return d.PosInfo }
+func (d *FleetDecl) declNode()     {}
+
 func (d *TargetDecl) Pos() Position { return d.PosInfo }
 func (d *TargetDecl) declNode()     {}
+
+// RetryConfig holds retry parameters for a node (v0.8+).
+type RetryConfig struct {
+	Attempts int
+	Delay    string // e.g. "5s"
+}
 
 // NodeDecl represents `node "name" { ... }`.
 type NodeDecl struct {
@@ -36,6 +62,11 @@ type NodeDecl struct {
 	FailurePolicy *Ident
 	Inputs        map[string]Expr
 	PosInfo       Position
+	// v0.8 contract fields (all optional)
+	Idempotent  *BoolLiteral   // true = safe to retry automatically
+	SideEffects *StringLiteral // "none" | "local" | "external"
+	Retry       *RetryConfig   // automatic retry configuration
+	RollbackCmd *ListLiteral   // process.exec inverse command for rollback
 }
 
 func (d *NodeDecl) Pos() Position { return d.PosInfo }
@@ -123,6 +154,15 @@ type BoolLiteral struct {
 func (e *BoolLiteral) Pos() Position { return e.PosInfo }
 func (e *BoolLiteral) exprNode()     {}
 
+// NumberLiteral represents a numeric literal.
+type NumberLiteral struct {
+	Value   int
+	PosInfo Position
+}
+
+func (e *NumberLiteral) Pos() Position { return e.PosInfo }
+func (e *NumberLiteral) exprNode()     {}
+
 // ListLiteral represents a list value, e.g. ["a", "b"].
 type ListLiteral struct {
 	Elems   []Expr
@@ -164,3 +204,14 @@ type TernaryExpr struct {
 
 func (e *TernaryExpr) Pos() Position { return e.PosInfo }
 func (e *TernaryExpr) exprNode()     {}
+
+// SecretRef represents `secret("KEY")` — a v0.9 typed reference to an external secret value.
+// Secrets are never embedded in the compiled plan; a sentinel placeholder is emitted instead.
+type SecretRef struct {
+	Key     string // the secret key name to resolve at apply time
+	PosInfo Position
+}
+
+func (e *SecretRef) Pos() Position { return e.PosInfo }
+func (e *SecretRef) exprNode()     {}
+

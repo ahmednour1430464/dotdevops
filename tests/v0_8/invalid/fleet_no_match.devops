@@ -1,0 +1,16 @@
+version = "v0.8"
+
+target "web1" {
+    address = "1.1.1.1:7700"
+    labels = { role = "web" }
+}
+
+fleet "empty_fleet" {
+    match = { role = "db" } // Matches nothing
+}
+
+node "fail_node" {
+    type = process.exec
+    targets = [empty_fleet]
+    cmd = ["ls"]
+}

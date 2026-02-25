@@ -2,6 +2,7 @@ package devlang
 
 import (
 	"fmt"
+	"strconv"
 )
 
 // ParseError represents a syntax-level error produced by the parser.
@@ -91,8 +92,12 @@ func (p *Parser) parseDecl() Decl {
 		return p.parseStepDecl()
 	case KW_MODULE:
 		return p.parseModuleDecl()
+	case KW_VERSION:
+		return p.parseVersionDecl()
+	case KW_FLEET:
+		return p.parseFleetDecl()
 	default:
-		p.addError("expected declaration (target, node, let, for, step, module)", p.cur.Pos)
+		p.addError("expected declaration (version, target, node, let, for, step, fleet, module)", p.cur.Pos)
 		return nil
 	}
 }
@@ -101,11 +106,118 @@ func (p *Parser) synchronize() {
 	// Simple error recovery: skip until a likely decl start or EOF.
 	for p.cur.Type != EOF {
 		switch p.cur.Type {
-		case KW_TARGET, KW_NODE, KW_LET, KW_FOR, KW_STEP, KW_MODULE:
+		case KW_TARGET, KW_NODE, KW_LET, KW_FOR, KW_STEP, KW_MODULE, KW_VERSION, KW_FLEET:
 			return
 		}
 		p.nextToken()
 	}
+}
+
+// version = "v0.7" — self-declared language version directive (v0.7+).
+func (p *Parser) parseVersionDecl() Decl {
+	startPos := p.cur.Pos
+	// expect '='
+	p.nextToken()
+	if p.cur.Type != EQUAL {
+		p.addError("expected '=' after 'version'", p.cur.Pos)
+		return &VersionDecl{PosInfo: startPos}
+	}
+	// expect string version
+	p.nextToken()
+	if p.cur.Type != STRING {
+		p.addError("expected version string (e.g. \"v0.7\")", p.cur.Pos)
+		return &VersionDecl{PosInfo: startPos}
+	}
+	return &VersionDecl{
+		Version: p.cur.Lexeme,
+		PosInfo: startPos,
+	}
+}
+
+// fleet "name" { match = { key = "val" } }
+func (p *Parser) parseFleetDecl() Decl {
+	startPos := p.cur.Pos
+	p.nextToken()
+	if p.cur.Type != STRING {
+		p.addError("expected fleet name string", p.cur.Pos)
+		return &FleetDecl{PosInfo: startPos}
+	}
+	nameTok := p.cur
+
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after fleet name", p.cur.Pos)
+	}
+
+	match := map[string]string{}
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected identifier in fleet body", p.cur.Pos)
+			p.synchronize()
+			break
+		}
+		key := p.cur.Lexeme
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' in fleet body", p.cur.Pos)
+			p.synchronize()
+			break
+		}
+		p.nextToken()
+		if key == "match" {
+			// parse inline map: { key = "val" ... }
+			if p.cur.Type != LBRACE {
+				p.addError("expected '{' for match map", p.cur.Pos)
+			} else {
+				match = p.parseStringMap()
+			}
+		} else {
+			// skip unknown fields
+			p.parseExpr()
+		}
+	}
+
+	return &FleetDecl{
+		Name:    nameTok.Lexeme,
+		Match:   match,
+		PosInfo: startPos,
+	}
+}
+
+// parseStringMap parses { key = "val" key2 = "val2" } → map[string]string.
+// Current token must be '{' on entry.
+func (p *Parser) parseStringMap() map[string]string {
+	result := map[string]string{}
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected identifier in map", p.cur.Pos)
+			break
+		}
+		key := p.cur.Lexeme
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' in map", p.cur.Pos)
+			break
+		}
+		p.nextToken()
+		if p.cur.Type != STRING {
+			p.addError("expected string value in map", p.cur.Pos)
+			break
+		}
+		result[key] = p.cur.Lexeme
+	}
+	return result
 }
 
 // target "name" { address = "..." }
@@ -126,6 +238,7 @@ func (p *Parser) parseTargetDecl() Decl {
 
 	// body
 	var addr *StringLiteral
+	labels := map[string]string{}
 	for {
 		p.nextToken()
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
@@ -144,19 +257,31 @@ func (p *Parser) parseTargetDecl() Decl {
 			break
 		}
 		p.nextToken()
-		expr := p.parseExpr()
-		if key.Lexeme == "address" {
+		switch key.Lexeme {
+		case "address":
+			expr := p.parseExpr()
 			if s, ok := expr.(*StringLiteral); ok {
 				addr = s
 			} else {
 				p.addError("address must be a string literal", expr.Pos())
 			}
+		case "labels":
+			// v0.8: labels = { role = "web" env = "prod" }
+			if p.cur.Type != LBRACE {
+				p.addError("expected '{' for labels map", p.cur.Pos)
+			} else {
+				labels = p.parseStringMap()
+			}
+		default:
+			// ignore unknown fields gracefully
+			p.parseExpr()
 		}
 	}
 
 	return &TargetDecl{
 		Name:    nameTok.Lexeme,
 		Address: addr,
+		Labels:  labels,
 		PosInfo: startPos,
 	}
 }
@@ -205,16 +330,16 @@ func (p *Parser) parseNodeDecl() Decl {
 		}
 
 		p.nextToken()
-		expr := p.parseExpr()
-
 		switch key {
 		case "type":
+			expr := p.parseExpr()
 			if id, ok := expr.(*Ident); ok {
 				node.Type = id
 			} else {
 				p.addError("type must be an identifier", expr.Pos())
 			}
 		case "targets":
+			expr := p.parseExpr()
 			if list, ok := expr.(*ListLiteral); ok {
 				for _, e := range list.Elems {
 					if id, ok := e.(*Ident); ok {
@@ -227,6 +352,7 @@ func (p *Parser) parseNodeDecl() Decl {
 				p.addError("targets must be a list", expr.Pos())
 			}
 		case "depends_on":
+			expr := p.parseExpr()
 			if list, ok := expr.(*ListLiteral); ok {
 				for _, e := range list.Elems {
 					if s, ok := e.(*StringLiteral); ok {
@@ -239,18 +365,90 @@ func (p *Parser) parseNodeDecl() Decl {
 				p.addError("depends_on must be a list", expr.Pos())
 			}
 		case "failure_policy":
+			expr := p.parseExpr()
 			if id, ok := expr.(*Ident); ok {
 				node.FailurePolicy = id
 			} else {
 				p.addError("failure_policy must be an identifier", expr.Pos())
 			}
+		case "idempotent":
+			expr := p.parseExpr()
+			if b, ok := expr.(*BoolLiteral); ok {
+				node.Idempotent = b
+			} else {
+				p.addError("idempotent must be a boolean literal (true or false)", expr.Pos())
+			}
+		case "side_effects":
+			expr := p.parseExpr()
+			if s, ok := expr.(*StringLiteral); ok {
+				node.SideEffects = s
+			} else {
+				p.addError("side_effects must be a string literal", expr.Pos())
+			}
+		case "rollback_cmd":
+			expr := p.parseExpr()
+			if list, ok := expr.(*ListLiteral); ok {
+				node.RollbackCmd = list
+			} else {
+				p.addError("rollback_cmd must be a list of string literals", expr.Pos())
+			}
+		case "retry":
+			if p.cur.Type != LBRACE {
+				p.addError("expected '{' after retry", p.cur.Pos)
+			} else {
+				node.Retry = p.parseRetryConfig()
+			}
 		default:
 			// Primitive-specific inputs
-			node.Inputs[key] = expr
+			node.Inputs[key] = p.parseExpr()
 		}
 	}
 
 	return node
+}
+
+func (p *Parser) parseRetryConfig() *RetryConfig {
+	res := &RetryConfig{}
+	
+	// current is '{'
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected identifier in retry block", p.cur.Pos)
+			p.synchronize()
+			break
+		}
+		key := p.cur.Lexeme
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' after identifier in retry block", p.cur.Pos)
+			p.synchronize()
+			break
+		}
+		p.nextToken()
+		expr := p.parseExpr()
+		switch key {
+		case "attempts":
+			if n, ok := expr.(*NumberLiteral); ok {
+				res.Attempts = n.Value
+			} else {
+				p.addError("attempts must be a number literal", expr.Pos())
+			}
+		case "delay":
+			if s, ok := expr.(*StringLiteral); ok {
+				res.Delay = s.Value
+			} else {
+				p.addError("delay must be a string literal", expr.Pos())
+			}
+		default:
+			p.addError(fmt.Sprintf("unknown retry field %q", key), p.cur.Pos)
+		}
+	}
+	
+	return res
 }
 
 // let name = expr
@@ -416,16 +614,16 @@ func (p *Parser) parseStepDecl() Decl {
 		}
 
 		p.nextToken()
-		expr := p.parseExpr()
-
 		switch key {
 		case "type":
+			expr := p.parseExpr()
 			if id, ok := expr.(*Ident); ok {
 				node.Type = id
 			} else {
 				p.addError("type must be an identifier", expr.Pos())
 			}
 		case "targets":
+			expr := p.parseExpr()
 			if list, ok := expr.(*ListLiteral); ok {
 				for _, e := range list.Elems {
 					if id, ok := e.(*Ident); ok {
@@ -438,6 +636,7 @@ func (p *Parser) parseStepDecl() Decl {
 				p.addError("targets must be a list", expr.Pos())
 			}
 		case "depends_on":
+			expr := p.parseExpr()
 			if list, ok := expr.(*ListLiteral); ok {
 				for _, e := range list.Elems {
 					if s, ok := e.(*StringLiteral); ok {
@@ -450,13 +649,41 @@ func (p *Parser) parseStepDecl() Decl {
 				p.addError("depends_on must be a list", expr.Pos())
 			}
 		case "failure_policy":
+			expr := p.parseExpr()
 			if id, ok := expr.(*Ident); ok {
 				node.FailurePolicy = id
 			} else {
 				p.addError("failure_policy must be an identifier", expr.Pos())
 			}
+		case "idempotent":
+			expr := p.parseExpr()
+			if b, ok := expr.(*BoolLiteral); ok {
+				node.Idempotent = b
+			} else {
+				p.addError("idempotent must be a boolean literal (true or false)", expr.Pos())
+			}
+		case "side_effects":
+			expr := p.parseExpr()
+			if s, ok := expr.(*StringLiteral); ok {
+				node.SideEffects = s
+			} else {
+				p.addError("side_effects must be a string literal", expr.Pos())
+			}
+		case "rollback_cmd":
+			expr := p.parseExpr()
+			if list, ok := expr.(*ListLiteral); ok {
+				node.RollbackCmd = list
+			} else {
+				p.addError("rollback_cmd must be a list of string literals", expr.Pos())
+			}
+		case "retry":
+			if p.cur.Type != LBRACE {
+				p.addError("expected '{' after retry", p.cur.Pos)
+			} else {
+				node.Retry = p.parseRetryConfig()
+			}
 		default:
-			node.Inputs[key] = expr
+			node.Inputs[key] = p.parseExpr()
 		}
 		
 		p.nextToken()
@@ -626,7 +853,7 @@ func (p *Parser) parseConcat() Expr {
 	return left
 }
 
-// parsePrimary parses primary expressions: literals, identifiers, lists
+// parsePrimary parses primary expressions: literals, identifiers, lists, secret() calls
 func (p *Parser) parsePrimary() Expr {
 	tok := p.cur
 	switch tok.Type {
@@ -634,7 +861,19 @@ func (p *Parser) parsePrimary() Expr {
 		return &StringLiteral{Value: tok.Lexeme, PosInfo: tok.Pos}
 	case BOOL:
 		return &BoolLiteral{Value: tok.Lexeme == "true", PosInfo: tok.Pos}
+	case NUMBER:
+		val, _ := strconv.Atoi(tok.Lexeme)
+		return &NumberLiteral{Value: val, PosInfo: tok.Pos}
 	case IDENT:
+		// v0.9: secret("KEY") — secret reference builtin.
+		// Syntax: the identifier "secret" followed immediately by '(' string ')'.
+		// Since we lack a dedicated LPAREN token, we check for ILLEGAL containing '('.
+		if tok.Lexeme == "secret" {
+			// peek to see if next raw char is '(' — lexer will emit ILLEGAL for '('
+			if p.peek.Type == ILLEGAL && p.peek.Lexeme == "(" {
+				return p.parseSecretRef(tok.Pos)
+			}
+		}
 		return &Ident{Name: tok.Lexeme, PosInfo: tok.Pos}
 	case LBRACKET:
 		return p.parseListLiteral()
@@ -643,6 +882,24 @@ func (p *Parser) parsePrimary() Expr {
 		return &StringLiteral{Value: "", PosInfo: tok.Pos}
 	}
 }
+
+// parseSecretRef parses secret("KEY") after "secret" has been consumed.
+// Current token is "secret", peek is ILLEGAL "(".
+func (p *Parser) parseSecretRef(startPos Position) Expr {
+	p.nextToken() // consume '('
+	p.nextToken() // move to the key string
+	if p.cur.Type != STRING {
+		p.addError("expected secret key string in secret(\"KEY\")", p.cur.Pos)
+		return &SecretRef{Key: "", PosInfo: startPos}
+	}
+	key := p.cur.Lexeme
+	p.nextToken() // move to ')'
+	if p.cur.Type != ILLEGAL || p.cur.Lexeme != ")" {
+		p.addError("expected ')' after secret key", p.cur.Pos)
+	}
+	return &SecretRef{Key: key, PosInfo: startPos}
+}
+
 
 func (p *Parser) parseListLiteral() Expr {
 	startPos := p.cur.Pos
