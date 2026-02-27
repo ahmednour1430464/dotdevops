@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Unit tests
+        run: go test -v -count=1 ./...
+
+      - name: Language v0.3 tests
+        run: bash test_v0_3.sh
+
+      - name: Language v0.4 tests
+        run: bash test_v0_4.sh
+
+      - name: Language v0.5 tests
+        run: bash test_v0_5.sh
+
+      - name: Language v0.6 tests
+        run: bash test_v0_6.sh
+
+      - name: Language v0.8 tests
+        run: bash test_v0_8.sh
+
+      - name: Hash stability tests
+        run: bash test_hash_stability.sh
+
+      - name: Invariant verification
+        run: bash verify_invariants.sh

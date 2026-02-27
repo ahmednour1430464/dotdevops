@@ -585,7 +585,136 @@ For production, use certificates from an external CA.`,
 	}
 	lspCmd.Flags().BoolVar(&lspStdio, "stdio", false, "Communicate via stdio")
 
-	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd, pkiCmd, lspCmd)
+	// ── devopsctl diff (top-level alias for plan diff) ───────────────────────
+	var diffLang string
+	diffCmd := &cobra.Command{
+		Use:   "diff <old.plan> <new.plan>",
+		Short: "Show the semantic difference between two plans",
+		Long:  "Compile both plans and display which nodes were added, removed, or changed.\nAlias for 'devopsctl plan diff'.",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			load := func(p string) (*plan.Plan, error) {
+				if filepath.Ext(p) == ".devops" {
+					src, err := os.ReadFile(p)
+					if err != nil {
+						return nil, err
+					}
+					res, err := devlang.CompileFileAutoDetect(p, src, diffLang)
+					if err != nil {
+						return nil, err
+					}
+					if len(res.Errors) > 0 {
+						for _, e := range res.Errors {
+							fmt.Fprintln(os.Stderr, "  ✗", e)
+						}
+						return nil, fmt.Errorf("compile failed for %s", p)
+					}
+					return res.Plan, nil
+				}
+				pl, _, err := plan.Load(p)
+				return pl, err
+			}
+			oldPlan, err := load(args[0])
+			if err != nil {
+				return err
+			}
+			newPlan, err := load(args[1])
+			if err != nil {
+				return err
+			}
+
+			diff := plan.Diff(oldPlan, newPlan)
+
+			if globalOutputFormat == "json" {
+				b, _ := json.MarshalIndent(diff, "", "  ")
+				fmt.Println(string(b))
+				if diff.HasChanges() {
+					os.Exit(1)
+				}
+				return nil
+			}
+
+			if !diff.HasChanges() {
+				fmt.Println("No semantic changes.")
+				return nil
+			}
+
+			for _, n := range diff.Added {
+				fmt.Printf("[+] %s\t(Added)\n", n.ID)
+			}
+			for _, n := range diff.Removed {
+				fmt.Printf("[-] %s\t(Removed)\n", n.ID)
+			}
+			for _, d := range diff.Changed {
+				if d.Old.Type != d.New.Type {
+					fmt.Printf("[~] %s\t(Changed: type %s → %s)\n", d.New.ID, d.Old.Type, d.New.Type)
+				} else {
+					fmt.Printf("[~] %s\t(Changed)\n", d.New.ID)
+				}
+			}
+			os.Exit(1)
+			return nil
+		},
+	}
+	diffCmd.Flags().StringVar(&diffLang, "lang", "v0.8", "Default language version for .devops files without version directive")
+
+	// ── devopsctl validate ────────────────────────────────────────────────────
+	var validateLang string
+	validateCmd := &cobra.Command{
+		Use:   "validate <file>",
+		Short: "Validate (compile) a plan without executing it",
+		Long:  "Compiles a .devops file (or validates a .json plan) and reports errors.\nExits 0 on success, 1 if there are any errors. No agent connection is made.\nIdeal for pre-commit hooks and CI validation.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			planPath := args[0]
+			if filepath.Ext(planPath) == ".devops" {
+				src, err := os.ReadFile(planPath)
+				if err != nil {
+					return fmt.Errorf("read source: %w", err)
+				}
+				res, err := devlang.CompileFileAutoDetect(planPath, src, validateLang)
+				if err != nil {
+					return fmt.Errorf("compile: %w", err)
+				}
+				if len(res.Errors) > 0 {
+					for _, e := range res.Errors {
+						fmt.Fprintln(os.Stderr, "  ✗", e)
+					}
+					return fmt.Errorf("%d error(s) found", len(res.Errors))
+				}
+				if globalOutputFormat == "json" {
+					b, _ := json.MarshalIndent(res.Plan, "", "  ")
+					fmt.Println(string(b))
+				} else {
+					fmt.Printf("✓ %s is valid (%d node(s), %d target(s))\n",
+						planPath, len(res.Plan.Nodes), len(res.Plan.Targets))
+				}
+				return nil
+			}
+			// JSON plan — just load and validate the IR.
+			p, _, err := plan.Load(planPath)
+			if err != nil {
+				return fmt.Errorf("load plan: %w", err)
+			}
+			if errs := plan.Validate(p); len(errs) > 0 {
+				for _, e := range errs {
+					fmt.Fprintln(os.Stderr, "  ✗", e)
+				}
+				return fmt.Errorf("%d error(s) found", len(errs))
+			}
+			if globalOutputFormat == "json" {
+				b, _ := json.MarshalIndent(p, "", "  ")
+				fmt.Println(string(b))
+			} else {
+				fmt.Printf("✓ %s is valid (%d node(s), %d target(s))\n",
+					planPath, len(p.Nodes), len(p.Targets))
+			}
+			return nil
+		},
+	}
+	validateCmd.Flags().StringVar(&validateLang, "lang", "v0.8", "Default language version for .devops files without version directive")
+
+	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd, pkiCmd, lspCmd, diffCmd, validateCmd)
 
 
 	if err := root.Execute(); err != nil {
