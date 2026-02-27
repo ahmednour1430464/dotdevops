@@ -92,12 +92,18 @@ func (p *Parser) parseDecl() Decl {
 		return p.parseStepDecl()
 	case KW_MODULE:
 		return p.parseModuleDecl()
+	case KW_PRIMITIVE:
+		return p.parsePrimitiveDecl()
 	case KW_VERSION:
 		return p.parseVersionDecl()
 	case KW_FLEET:
 		return p.parseFleetDecl()
+	case KW_IMPORT:
+		return p.parseImportDecl()
+	case KW_FN:
+		return p.parseFnDecl()
 	default:
-		p.addError("expected declaration (version, target, node, let, for, step, fleet, module)", p.cur.Pos)
+		p.addError("expected declaration (version, target, node, let, for, step, fleet, module, import, fn)", p.cur.Pos)
 		return nil
 	}
 }
@@ -106,7 +112,7 @@ func (p *Parser) synchronize() {
 	// Simple error recovery: skip until a likely decl start or EOF.
 	for p.cur.Type != EOF {
 		switch p.cur.Type {
-		case KW_TARGET, KW_NODE, KW_LET, KW_FOR, KW_STEP, KW_MODULE, KW_VERSION, KW_FLEET:
+		case KW_TARGET, KW_NODE, KW_LET, KW_FOR, KW_STEP, KW_MODULE, KW_VERSION, KW_FLEET, KW_PRIMITIVE, KW_IMPORT, KW_FN:
 			return
 		}
 		p.nextToken()
@@ -218,6 +224,81 @@ func (p *Parser) parseStringMap() map[string]string {
 		result[key] = p.cur.Lexeme
 	}
 	return result
+}
+
+// import "path" — imports declarations from another file (v2.0+).
+func (p *Parser) parseImportDecl() Decl {
+	startPos := p.cur.Pos
+	// expect string path
+	p.nextToken()
+	if p.cur.Type != STRING {
+		p.addError("expected import path string", p.cur.Pos)
+		return &ImportDecl{PosInfo: startPos}
+	}
+	return &ImportDecl{
+		Path:    p.cur.Lexeme,
+		PosInfo: startPos,
+	}
+}
+
+// fn name(params) { body } — user-defined function (v2.0+).
+func (p *Parser) parseFnDecl() Decl {
+	startPos := p.cur.Pos
+	// expect identifier (function name)
+	p.nextToken()
+	if p.cur.Type != IDENT {
+		p.addError("expected function name", p.cur.Pos)
+		return &FnDecl{PosInfo: startPos}
+	}
+	name := p.cur.Lexeme
+
+	// expect '('
+	p.nextToken()
+	if p.cur.Type != LPAREN {
+		p.addError("expected '(' after function name", p.cur.Pos)
+		return &FnDecl{Name: name, PosInfo: startPos}
+	}
+
+	// parse parameters
+	var params []string
+	for {
+		p.nextToken()
+		if p.cur.Type == RPAREN || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected parameter name", p.cur.Pos)
+			break
+		}
+		params = append(params, p.cur.Lexeme)
+	}
+
+	// expect '{'
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after function parameters", p.cur.Pos)
+		return &FnDecl{Name: name, Params: params, PosInfo: startPos}
+	}
+
+	// parse body expression
+	p.nextToken()
+	body := p.parseExpr()
+
+	// expect '}'
+	p.nextToken()
+	if p.cur.Type != RBRACE {
+		p.addError("expected '}' after function body", p.cur.Pos)
+	}
+
+	return &FnDecl{
+		Name:    name,
+		Params:  params,
+		Body:    body,
+		PosInfo: startPos,
+	}
 }
 
 // target "name" { address = "..." }
@@ -535,8 +616,13 @@ func (p *Parser) parseStepDecl() Decl {
 	// Phase 1: Parse param declarations (must come first)
 	var params []*ParamDecl
 	seenBodyField := false
+	needNextToken := true
 	for {
-		p.nextToken()
+		if needNextToken {
+			p.nextToken()
+		}
+		needNextToken = true  // Reset for next iteration
+		
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
 			// Empty step body
 			return &StepDecl{
@@ -571,6 +657,11 @@ func (p *Parser) parseStepDecl() Decl {
 				// Optional parameter with default
 				p.nextToken()
 				defaultExpr = p.parseExpr()
+				p.nextToken()  // Move past expression
+				needNextToken = false  // We've already advanced
+			} else {
+				// No default - p.cur is already at the next token
+				needNextToken = false  // Don't advance again at loop start
 			}
 			
 			params = append(params, &ParamDecl{
@@ -733,6 +824,297 @@ func (p *Parser) parseModuleDecl() Decl {
 	}
 }
 
+// primitive "name" { inputs { ... } body { ... } }
+func (p *Parser) parsePrimitiveDecl() Decl {
+	startPos := p.cur.Pos
+	p.nextToken()
+	if p.cur.Type != STRING {
+		p.addError("expected primitive name string", p.cur.Pos)
+		return &PrimitiveDecl{PosInfo: startPos}
+	}
+	name := p.cur.Lexeme
+
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after primitive name", p.cur.Pos)
+	}
+
+	decl := &PrimitiveDecl{
+		Name:    name,
+		PosInfo: startPos,
+	}
+
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		
+		switch p.cur.Type {
+		case KW_INPUTS:
+			decl.Inputs = p.parsePrimitiveInputs()
+		case KW_PREPARE:
+			decl.Prepare = p.parsePrimitivePrepare()
+		case KW_BODY:
+			decl.Body = p.parsePrimitiveBody()
+		case KW_CONTRACT:
+			decl.Contract = p.parsePrimitiveContract()
+		case KW_PROBE:
+			decl.Probe = p.parsePrimitiveProbe()
+		case KW_DESIRED:
+			decl.Desired = p.parsePrimitiveDesired()
+		default:
+			// Unknown field
+			if p.cur.Type == IDENT {
+				p.addError(fmt.Sprintf("unsupported primitive field %q", p.cur.Lexeme), p.cur.Pos)
+				p.synchronize()
+			} else {
+				p.addError("expected 'inputs', 'prepare', 'body', 'contract', 'probe', or 'desired' in primitive", p.cur.Pos)
+				p.synchronize()
+			}
+		}
+	}
+
+	return decl
+}
+
+func (p *Parser) parsePrimitiveInputs() []*PrimitiveInputDecl {
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after 'inputs'", p.cur.Pos)
+		return nil
+	}
+	
+	var inputs []*PrimitiveInputDecl
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected input name identifier", p.cur.Pos)
+			// don't synchronize here to avoid skipping the whole inputs block
+			continue
+		}
+		name := p.cur.Lexeme
+		pos := p.cur.Pos
+		
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' after input name", p.cur.Pos)
+			continue
+		}
+		
+		p.nextToken()
+		if p.cur.Type != IDENT {
+			p.addError("expected type identifier (e.g. string, bool, list)", p.cur.Pos)
+			continue
+		}
+		typ := &Ident{Name: p.cur.Lexeme, PosInfo: p.cur.Pos}
+		
+		inputs = append(inputs, &PrimitiveInputDecl{
+			Name:    name,
+			Type:    typ,
+			PosInfo: pos,
+		})
+	}
+	return inputs
+}
+
+func (p *Parser) parsePrimitiveBody() []Decl {
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after 'body'", p.cur.Pos)
+		return nil
+	}
+	
+	var body []Decl
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		// Handle foreach inside primitive body
+		if p.cur.Type == KW_FOREACH {
+			foreachDecl := p.parseForeachBodyDecl()
+			if foreachDecl != nil {
+				body = append(body, foreachDecl)
+			}
+			continue
+		}
+		decl := p.parseDecl()
+		if decl != nil {
+			body = append(body, decl)
+		} else {
+			// If parseDecl failed, synchronize but stay within the body block if possible
+			// Actually parseDecl already synchronizes.
+		}
+	}
+	return body
+}
+
+// parsePrimitiveContract parses the contract { ... } block in a primitive.
+// Supports: idempotent (bool), side_effects (string), retry (int)
+func (p *Parser) parsePrimitiveContract() *ContractDecl {
+	startPos := p.cur.Pos
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after 'contract'", p.cur.Pos)
+		return nil
+	}
+	
+	contract := &ContractDecl{PosInfo: startPos}
+	
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected contract field name", p.cur.Pos)
+			continue
+		}
+		fieldName := p.cur.Lexeme
+		
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' after contract field name", p.cur.Pos)
+			continue
+		}
+		
+		p.nextToken()
+		switch fieldName {
+		case "idempotent":
+			if p.cur.Type == BOOL {
+				val := p.cur.Lexeme == "true"
+				contract.Idempotent = &val
+			} else {
+				p.addError("idempotent must be true or false", p.cur.Pos)
+			}
+		case "side_effects":
+			if p.cur.Type == STRING {
+				val := p.cur.Lexeme
+				if val != "none" && val != "local" && val != "external" {
+					p.addError("side_effects must be \"none\", \"local\", or \"external\"", p.cur.Pos)
+				} else {
+					contract.SideEffects = &val
+				}
+			} else {
+				p.addError("side_effects must be a string", p.cur.Pos)
+			}
+		case "retry":
+			if p.cur.Type == NUMBER {
+				val, _ := strconv.Atoi(p.cur.Lexeme)
+				contract.Retry = &val
+			} else {
+				p.addError("retry must be a number", p.cur.Pos)
+			}
+		default:
+			p.addError(fmt.Sprintf("unknown contract field %q", fieldName), p.cur.Pos)
+		}
+	}
+	
+	return contract
+}
+
+// parsePrimitiveProbe parses the probe { ... } block in a primitive.
+// Example: probe { exists = _fs.exists(inputs.path) }
+func (p *Parser) parsePrimitiveProbe() *ProbeDecl {
+	startPos := p.cur.Pos
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after 'probe'", p.cur.Pos)
+		return nil
+	}
+	
+	probe := &ProbeDecl{PosInfo: startPos}
+	
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected probe field name", p.cur.Pos)
+			continue
+		}
+		fieldName := p.cur.Lexeme
+		fieldPos := p.cur.Pos
+		
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' after probe field name", p.cur.Pos)
+			continue
+		}
+		
+		p.nextToken()
+		expr := p.parseExpr()
+		
+		probe.Fields = append(probe.Fields, &ProbeField{
+			Name:    fieldName,
+			Expr:    expr,
+			PosInfo: fieldPos,
+		})
+	}
+	
+	return probe
+}
+
+// parsePrimitiveDesired parses the desired { ... } block in a primitive.
+// Example: desired { exists = true }
+func (p *Parser) parsePrimitiveDesired() *DesiredDecl {
+	startPos := p.cur.Pos
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after 'desired'", p.cur.Pos)
+		return nil
+	}
+	
+	desired := &DesiredDecl{PosInfo: startPos}
+	
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected desired field name", p.cur.Pos)
+			continue
+		}
+		fieldName := p.cur.Lexeme
+		fieldPos := p.cur.Pos
+		
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' after desired field name", p.cur.Pos)
+			continue
+		}
+		
+		p.nextToken()
+		expr := p.parseExpr()
+		
+		desired.Fields = append(desired.Fields, &DesiredField{
+			Name:    fieldName,
+			Expr:    expr,
+			PosInfo: fieldPos,
+		})
+	}
+	
+	return desired
+}
+
 // parseExpr parses expressions with precedence climbing.
 // Precedence (lowest to highest): ternary (?:), ||, &&, ==, !=, +
 func (p *Parser) parseExpr() Expr {
@@ -866,13 +1248,12 @@ func (p *Parser) parsePrimary() Expr {
 		return &NumberLiteral{Value: val, PosInfo: tok.Pos}
 	case IDENT:
 		// v0.9: secret("KEY") — secret reference builtin.
-		// Syntax: the identifier "secret" followed immediately by '(' string ')'.
-		// Since we lack a dedicated LPAREN token, we check for ILLEGAL containing '('.
-		if tok.Lexeme == "secret" {
-			// peek to see if next raw char is '(' — lexer will emit ILLEGAL for '('
-			if p.peek.Type == ILLEGAL && p.peek.Lexeme == "(" {
-				return p.parseSecretRef(tok.Pos)
-			}
+		if tok.Lexeme == "secret" && p.peek.Type == LPAREN {
+			return p.parseSecretRef(tok.Pos)
+		}
+		// v1.3: function call syntax like _fs.exists(path)
+		if p.peek.Type == LPAREN {
+			return p.parseFunctionCall(tok)
 		}
 		return &Ident{Name: tok.Lexeme, PosInfo: tok.Pos}
 	case LBRACKET:
@@ -884,7 +1265,7 @@ func (p *Parser) parsePrimary() Expr {
 }
 
 // parseSecretRef parses secret("KEY") after "secret" has been consumed.
-// Current token is "secret", peek is ILLEGAL "(".
+// Current token is "secret", peek is LPAREN.
 func (p *Parser) parseSecretRef(startPos Position) Expr {
 	p.nextToken() // consume '('
 	p.nextToken() // move to the key string
@@ -894,10 +1275,42 @@ func (p *Parser) parseSecretRef(startPos Position) Expr {
 	}
 	key := p.cur.Lexeme
 	p.nextToken() // move to ')'
-	if p.cur.Type != ILLEGAL || p.cur.Lexeme != ")" {
+	if p.cur.Type != RPAREN {
 		p.addError("expected ')' after secret key", p.cur.Pos)
 	}
 	return &SecretRef{Key: key, PosInfo: startPos}
+}
+
+// parseFunctionCall parses a function call like _fs.exists(path) or _fs.stat(inputs.path).
+// Current token is the function name identifier, peek is LPAREN.
+func (p *Parser) parseFunctionCall(nameTok Token) Expr {
+	startPos := nameTok.Pos
+	funcName := nameTok.Lexeme
+	
+	p.nextToken() // consume '('
+	p.nextToken() // move to first argument or ')'
+	
+	var args []Expr
+	for p.cur.Type != RPAREN && p.cur.Type != EOF {
+		arg := p.parseExpr()
+		args = append(args, arg)
+		
+		p.nextToken()
+		if p.cur.Type == COMMA {
+			p.nextToken()
+			continue
+		}
+	}
+	
+	if p.cur.Type != RPAREN {
+		p.addError("expected ')' after function arguments", p.cur.Pos)
+	}
+	
+	return &FunctionCall{
+		Name:    funcName,
+		Args:    args,
+		PosInfo: startPos,
+	}
 }
 
 
@@ -926,4 +1339,107 @@ func (p *Parser) parseListLiteral() Expr {
 	}
 
 	return &ListLiteral{Elems: elems, PosInfo: startPos}
+}
+
+// parsePrimitivePrepare parses the prepare { ... } block in a primitive.
+// Example: prepare { files = _ctrl.readdir(inputs.src) }
+func (p *Parser) parsePrimitivePrepare() *PrepareDecl {
+	startPos := p.cur.Pos
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' after 'prepare'", p.cur.Pos)
+		return nil
+	}
+	
+	prepare := &PrepareDecl{PosInfo: startPos}
+	
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		if p.cur.Type == COMMA {
+			continue
+		}
+		if p.cur.Type != IDENT {
+			p.addError("expected variable name in prepare block", p.cur.Pos)
+			continue
+		}
+		varName := p.cur.Lexeme
+		varPos := p.cur.Pos
+		
+		p.nextToken()
+		if p.cur.Type != EQUAL {
+			p.addError("expected '=' after variable name in prepare block", p.cur.Pos)
+			continue
+		}
+		
+		p.nextToken()
+		expr := p.parseExpr()
+		
+		prepare.Bindings = append(prepare.Bindings, &PrepareBinding{
+			Name:    varName,
+			Expr:    expr,
+			PosInfo: varPos,
+		})
+	}
+	
+	return prepare
+}
+
+// parseForeachBodyDecl parses a foreach x in y { ... } block inside a primitive body.
+// Example: foreach file in prepare.files { node "copy-${file.name}" { ... } }
+func (p *Parser) parseForeachBodyDecl() *ForeachBodyDecl {
+	startPos := p.cur.Pos
+	
+	// Current token is 'foreach'
+	p.nextToken()
+	if p.cur.Type != IDENT {
+		p.addError("expected loop variable name after foreach", p.cur.Pos)
+		return nil
+	}
+	varName := p.cur.Lexeme
+	
+	p.nextToken()
+	if p.cur.Type != KW_IN {
+		p.addError("expected 'in' after loop variable", p.cur.Pos)
+		return nil
+	}
+	
+	p.nextToken()
+	rangeExpr := p.parseExpr()
+	
+	// expect '{'
+	p.nextToken()
+	if p.cur.Type != LBRACE {
+		p.addError("expected '{' to start foreach body", p.cur.Pos)
+		return nil
+	}
+	
+	var body []Decl
+	for {
+		p.nextToken()
+		if p.cur.Type == RBRACE || p.cur.Type == EOF {
+			break
+		}
+		// Allow nested foreach
+		if p.cur.Type == KW_FOREACH {
+			nestedForeach := p.parseForeachBodyDecl()
+			if nestedForeach != nil {
+				body = append(body, nestedForeach)
+			}
+			continue
+		}
+		decl := p.parseDecl()
+		if decl != nil {
+			body = append(body, decl)
+		}
+	}
+	
+	return &ForeachBodyDecl{
+		VarName: varName,
+		Range:   rangeExpr,
+		Body:    body,
+		PosInfo: startPos,
+	}
 }

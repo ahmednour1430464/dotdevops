@@ -1,0 +1,13 @@
+version = "v2.0"
+
+// Manually inlined - same as importing common.devops
+target "web1" { address = "10.0.0.1:7700" }
+target "web2" { address = "10.0.0.2:7700" }
+
+// Use manually-expanded function value
+node "setup" {
+    type    = process.exec
+    targets = [web1]
+    cmd     = ["setup", "/opt/apps/config"]
+    cwd     = "/"
+}

@@ -22,6 +22,41 @@ var PrimitiveDefaults = map[string]PrimitiveContextRequirements{
 		MinimumTrustLevel:  TrustLevelLow,
 		RequiresFilesystem: true, // for cwd
 	},
+	"_exec": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_fs.write": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_fs.read": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_fs.mkdir": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_fs.delete": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_fs.chmod": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelMedium,
+		RequiresFilesystem: true,
+	},
+	"_fs.chown": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelHigh,
+		RequiresFilesystem: true,
+	},
 }
 
 // ResolveContext determines which execution context to use for a given primitive.

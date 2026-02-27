@@ -25,14 +25,26 @@ const (
 	KW_PARAM
 	KW_VERSION // v0.7: self-declared version directive
 	KW_FLEET   // v0.8: named group of targets by label selector
+	KW_PRIMITIVE // v1.2: custom primitive definition
+	KW_INPUTS
+	KW_BODY
+	KW_CONTRACT
+	KW_PROBE   // v1.3: probe block in primitive
+	KW_DESIRED // v1.3: desired state block in primitive
+	KW_PREPARE // v1.4: controller-side preparation block
+	KW_FOREACH // v1.4: compile-time iteration over lists
+	KW_IMPORT  // v2.0: import declarations from other files
+	KW_FN      // v2.0: user-defined functions
 
 	// Operators & punctuation
-	EQUAL     // =
-	LBRACE    // {
-	RBRACE    // }
-	LBRACKET  // [
-	RBRACKET  // ]
-	COMMA     // ,
+	EQUAL    // =
+	LBRACE   // {
+	RBRACE   // }
+	LBRACKET // [
+	RBRACKET // ]
+	LPAREN   // (
+	RPAREN   // )
+	COMMA    // ,
 	PLUS      // +
 	AMPAMP    // &&
 	PIPEPIPE  // ||
@@ -91,6 +103,12 @@ func (l *Lexer) NextToken() Token {
 	case ']':
 		l.advance()
 		return Token{Type: RBRACKET, Lexeme: "]", Pos: startPos}
+	case '(':
+		l.advance()
+		return Token{Type: LPAREN, Lexeme: "(", Pos: startPos}
+	case ')':
+		l.advance()
+		return Token{Type: RPAREN, Lexeme: ")", Pos: startPos}
 	case '=':
 		l.advance()
 		// Check for ==
@@ -295,6 +313,28 @@ func (l *Lexer) readIdentOrKeyword() Token {
 		return Token{Type: KW_VERSION, Lexeme: lexeme, Pos: startPos}
 	case "fleet":
 		return Token{Type: KW_FLEET, Lexeme: lexeme, Pos: startPos}
+	case "primitive":
+		return Token{Type: KW_PRIMITIVE, Lexeme: lexeme, Pos: startPos}
+	case "inputs":
+		// Only treat as keyword if it's likely a block start in a primitive/step
+		// For now, always treat as keyword to simplify parsing top-level blocks.
+		return Token{Type: KW_INPUTS, Lexeme: lexeme, Pos: startPos}
+	case "body":
+		return Token{Type: KW_BODY, Lexeme: lexeme, Pos: startPos}
+	case "contract":
+		return Token{Type: KW_CONTRACT, Lexeme: lexeme, Pos: startPos}
+	case "probe":
+		return Token{Type: KW_PROBE, Lexeme: lexeme, Pos: startPos}
+	case "desired":
+		return Token{Type: KW_DESIRED, Lexeme: lexeme, Pos: startPos}
+	case "prepare":
+		return Token{Type: KW_PREPARE, Lexeme: lexeme, Pos: startPos}
+	case "foreach":
+		return Token{Type: KW_FOREACH, Lexeme: lexeme, Pos: startPos}
+	case "import":
+		return Token{Type: KW_IMPORT, Lexeme: lexeme, Pos: startPos}
+	case "fn":
+		return Token{Type: KW_FN, Lexeme: lexeme, Pos: startPos}
 	case "true", "false":
 		return Token{Type: BOOL, Lexeme: lexeme, Pos: startPos}
 	}

@@ -6,21 +6,23 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"text/tabwriter"
 	"time"
-	"crypto/tls"
-	"crypto/x509"
-	"io/ioutil"
 
 	"devopsctl/internal/plan"
 	"devopsctl/internal/primitive/filesync"
 	"devopsctl/internal/proto"
+	"devopsctl/internal/secret"
 	"devopsctl/internal/state"
 )
 
@@ -33,10 +35,43 @@ type RunOptions struct {
 	Resume      bool
 	Reconcile   bool
 	Observe     bool
-	
+
 	TLSCertPath string
 	TLSKeyPath  string
 	TLSCAPath   string
+
+	// SecretProvider resolves secret() references in the plan at apply-time.
+	// If nil, secrets are resolved from environment variables (EnvProvider).
+	SecretProvider secret.Provider
+
+	Confirm bool // Automatically confirm dangerous rollback skips
+
+	OutputFormat string // "text" or "json"
+}
+
+// ExecutionResult represents the outcome of a single node/target execution.
+type ExecutionResult struct {
+	Node       string `json:"node"`
+	Target     string `json:"target"`
+	Status     string `json:"status"`
+	DurationMS int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ObservationResult represents the outcome of a single node/target observation.
+type ObservationResult struct {
+	Node     string `json:"node"`
+	Target   string `json:"target"`
+	Desired  any    `json:"desired,omitempty"`
+	Observed any    `json:"observed,omitempty"`
+	InSync   bool   `json:"in_sync"`
+}
+
+// RollbackResult represents the summary of a rollback run.
+type RollbackResult struct {
+	RolledBack []string `json:"rolled_back"`
+	Skipped    []string `json:"skipped"`
+	Errors     []string `json:"errors,omitempty"`
 }
 
 // Run executes a plan file end-to-end using the execution graph.
@@ -58,6 +93,9 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 
 	var mu sync.Mutex
 	var errs []error
+
+	var results []any
+	var resultsMu sync.Mutex
 
 	nodeStates := make(map[string]string)
 	nodeChanged := make(map[string]bool)
@@ -136,7 +174,7 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 					}
 					recStatus := nodeStates[id]
 					mu.Unlock()
-					
+
 					for _, tID := range node.Targets {
 						if target, ok := targetMap[tID]; ok {
 							inputsWithAddr := make(map[string]any)
@@ -144,12 +182,23 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 								inputsWithAddr[k] = v
 							}
 							inputsWithAddr["__target_addr"] = target.Address
+							inputsWithAddr = secret.RedactNodeInputs(inputsWithAddr, node.RequiresSecrets)
 							nodeHash := node.Hash(target.ID)
 							_ = store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, "skipped_cs", recStatus, proto.ChangeSet{}, inputsWithAddr)
-							if isBlocked {
-								fmt.Printf("[%s → %s] skipped (dependency failed)\n", node.ID, target.ID)
+							if opts.OutputFormat == "json" {
+								resultsMu.Lock()
+								results = append(results, ExecutionResult{
+									Node:   node.ID,
+									Target: target.ID,
+									Status: "skipped",
+								})
+								resultsMu.Unlock()
 							} else {
-								fmt.Printf("[%s → %s] skipped (dependency or condition)\n", node.ID, target.ID)
+								if isBlocked {
+									fmt.Printf("[%s → %s] skipped (dependency failed)\n", node.ID, target.ID)
+								} else {
+									fmt.Printf("[%s → %s] skipped (dependency or condition)\n", node.ID, target.ID)
+								}
 							}
 						}
 					}
@@ -173,7 +222,7 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 					sem <- struct{}{}
 					go func(t plan.Target) {
 						defer func() { <-sem; targetWg.Done() }()
-						
+
 						// Check cancel
 						select {
 						case <-ctx.Done():
@@ -183,10 +232,10 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 
 						nodeHash := node.Hash(t.ID)
 						latest, err := store.LatestExecution(node.ID, t.ID)
-						
+
 						isResumable := false
 						isReconciled := false
-						
+
 						if err == nil && latest != nil {
 							// 1. Resume logic: history-based skip for speed/correctness of interrupted runs
 							if opts.Resume && latest.PlanHash == planHash && latest.Status == "applied" {
@@ -210,7 +259,17 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 						}
 
 						if isResumable {
-							fmt.Printf("[%s → %s] skipped (resumed)\n", node.ID, t.ID)
+							if opts.OutputFormat == "json" {
+								resultsMu.Lock()
+								results = append(results, ExecutionResult{
+									Node:   node.ID,
+									Target: t.ID,
+									Status: "skipped",
+								})
+								resultsMu.Unlock()
+							} else {
+								fmt.Printf("[%s → %s] skipped (resumed)\n", node.ID, t.ID)
+							}
 							targetMu.Lock()
 							if latest != nil && (totalChanges(latest.ChangeSet) > 0 || node.Type == "process.exec") {
 								anyChanged = true
@@ -220,7 +279,17 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 						}
 
 						if isReconciled {
-							fmt.Printf("[%s → %s] ✓ up to date (reconciled from history)\n", node.ID, t.ID)
+							if opts.OutputFormat == "json" {
+								resultsMu.Lock()
+								results = append(results, ExecutionResult{
+									Node:   node.ID,
+									Target: t.ID,
+									Status: "up-to-date",
+								})
+								resultsMu.Unlock()
+							} else {
+								fmt.Printf("[%s → %s] ✓ up to date (reconciled from history)\n", node.ID, t.ID)
+							}
 							targetMu.Lock()
 							if latest != nil && (totalChanges(latest.ChangeSet) > 0 || node.Type == "process.exec") {
 								anyChanged = true
@@ -244,21 +313,51 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 										delay = d
 									}
 								}
-								fmt.Printf("[%s → %s] retrying (%d/%d) after %v...\n", node.ID, t.ID, a, attempts, delay)
+								if opts.OutputFormat != "json" {
+									fmt.Printf("[%s → %s] retrying (%d/%d) after %v...\n", node.ID, t.ID, a, attempts, delay)
+								}
 								time.Sleep(delay)
 							}
 
-							changed, err = runNode(ctx, node, t, planHash, nodeHash, store, opts)
+							start := time.Now()
+							var res any
+							changed, res, err = runNode(ctx, node, t, planHash, nodeHash, store, opts)
+							duration := time.Since(start)
+
+							if opts.OutputFormat == "json" {
+								if res != nil {
+									if er, ok := res.(ExecutionResult); ok {
+										er.DurationMS = duration.Milliseconds()
+										resultsMu.Lock()
+										results = append(results, er)
+										resultsMu.Unlock()
+									} else {
+										resultsMu.Lock()
+										results = append(results, res)
+										resultsMu.Unlock()
+									}
+								} else if err != nil {
+									resultsMu.Lock()
+									results = append(results, ExecutionResult{
+										Node:       node.ID,
+										Target:     t.ID,
+										Status:     "failed",
+										DurationMS: duration.Milliseconds(),
+										Error:      err.Error(),
+									})
+									resultsMu.Unlock()
+								}
+							}
+
 							if err == nil {
 								break
 							}
-							
-							// If it's the last attempt, don't retry anymore
+
 							if a == attempts {
 								break
 							}
 						}
-						
+
 						targetMu.Lock()
 						if err != nil {
 							nodeErrs = append(nodeErrs, fmt.Errorf("[%s → %s] %w", node.ID, t.ID, err))
@@ -288,10 +387,10 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 				} else {
 					nodeStates[id] = "applied"
 				}
-				
+
 				isHaltOrRollback := haltExecution && (node.FailurePolicy == "halt" || node.FailurePolicy == "rollback" || node.FailurePolicy == "")
 				failedPolicy := node.FailurePolicy
-				
+
 				mu.Unlock()
 
 				if len(nodeErrs) > 0 && failedPolicy == "rollback" && isHaltOrRollback {
@@ -308,7 +407,7 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 	completed := 0
 	for id := range doneChan {
 		completed++
-		
+
 		mu.Lock()
 		// Unlock dependants
 		for _, dep := range graph.Edges[id] {
@@ -326,174 +425,124 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 	wg.Wait()
 
 	if len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "ERROR: %v\n", e)
+		if opts.OutputFormat != "json" {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", e)
+			}
+		}
+		if opts.OutputFormat == "json" {
+			b, _ := json.MarshalIndent(results, "", "  ")
+			fmt.Println(string(b))
 		}
 		return fmt.Errorf("%d node(s) failed", len(errs))
+	}
+	if opts.OutputFormat == "json" {
+		b, _ := json.MarshalIndent(results, "", "  ")
+		fmt.Println(string(b))
 	}
 	return nil
 }
 
-// runNode handles one (node × target) pair. Return (changed, error).
-func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
-	addr := addressWithPort(target.Address)
-	if node.Type == "file.sync" {
-		return runFileSync(ctx, addr, node, target, planHash, nodeHash, store, opts)
-	} else if node.Type == "process.exec" {
-		return runProcessExec(ctx, addr, node, target, planHash, nodeHash, store, opts)
-	}
-	return false, fmt.Errorf("unsupported primitive type: %s", node.Type)
-}
-
-func runFileSync(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
-	conn, err := dialAgent(ctx, addr, opts)
-	if err != nil {
-		return false, fmt.Errorf("connect to agent %s: %w", addr, err)
-	}
-	defer conn.Close()
-
-	r := bufio.NewReader(conn)
-	enc := json.NewEncoder(conn)
-
-	// ── Step 1: Detect remote state ──────────────────────────────────────────
-	_ = enc.Encode(proto.DetectReq{
-		Type:      "detect_req",
-		NodeID:    node.ID,
-		Primitive: node.Type,
-		Inputs:    node.Inputs,
-	})
-	var detectResp proto.DetectResp
-	if err := readJSON(r, &detectResp); err != nil {
-		return false, fmt.Errorf("detect response: %w", err)
-	}
-	if detectResp.Error != "" {
-		return false, fmt.Errorf("agent detect error: %s", detectResp.Error)
-	}
-	destTree := detectResp.State
-
-	// ── Step 2: Build source tree (controller-local) ──────────────────────────
-	src, _ := node.Inputs["src"].(string)
-	srcTree, err := filesync.BuildSourceTree(src)
-	if err != nil {
-		return false, fmt.Errorf("building source tree: %w", err)
-	}
-
-	var deleteExtra bool
-	switch v := node.Inputs["delete_extra"].(type) {
-	case bool:
-		deleteExtra = v
-	case string:
-		deleteExtra = v == "true"
-	}
-	desiredMode := uint32(0)
-	desiredUID, desiredGID := -1, -1
-
-	cs := filesync.Diff(srcTree, destTree, desiredMode, desiredUID, desiredGID, deleteExtra)
-
-	// ── Step 3: Display diff ──────────────────────────────────────────────────
-	PrintDiff(node.ID, target.ID, cs)
-
-	if filesync.IsEmpty(cs) {
-		fmt.Printf("[%s → %s] ✓ no changes\n", node.ID, target.ID)
-		return false, nil
-	}
-
-	if opts.DryRun || opts.Observe {
-		if opts.DryRun {
-			fmt.Printf("[%s → %s] dry-run: %d change(s) would be applied\n",
-				node.ID, target.ID, totalChanges(cs))
-		} else {
-			fmt.Printf("[%s → %s] observe: %d change(s) detected\n",
-				node.ID, target.ID, totalChanges(cs))
+// runNode handles one (node × target) pair. Return (changed, result, error).
+func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, any, error) {
+	// ── Resolve secrets before dispatching to agent ───────────────────────────
+	resolvedInputs := node.Inputs
+	if len(node.RequiresSecrets) > 0 {
+		provider := opts.SecretProvider
+		if provider == nil {
+			provider = &secret.EnvProvider{}
 		}
-		return true, nil
+		var err error
+		resolvedInputs, err = secret.ResolveNodeInputs(node.Inputs, provider)
+		if err != nil {
+			return false, nil, fmt.Errorf("secret resolution via %s: %w", provider.Name(), err)
+		}
 	}
 
-	// ── Step 4: Apply ─────────────────────────────────────────────────────────
-	conn.Close()
-	conn, err = dialAgent(ctx, addr, opts)
-	if err != nil {
-		return false, fmt.Errorf("re-connect for apply: %w", err)
-	}
-	defer conn.Close()
-	r = bufio.NewReader(conn)
-	enc = json.NewEncoder(conn)
+	addr := addressWithPort(target.Address)
 
-	applyReq := applyReqFull{
-		ApplyReq: proto.ApplyReq{
-			Type:      "apply_req",
-			NodeID:    node.ID,
-			Primitive: node.Type,
-			PlanHash:  planHash,
-			ChangeSet: cs,
-		},
-		Inputs: node.Inputs,
-	}
-	if err := enc.Encode(applyReq); err != nil {
-		return false, fmt.Errorf("sending apply_req: %w", err)
-	}
+	// ── v1.3+ Probe-based state comparison ─────────────────────────────────────
+	if node.Probe != nil && node.Desired != nil {
+		observed, err := runProbe(ctx, addr, node, opts)
+		if err != nil {
+			// Probe failed - continue to run body (conservative)
+			if opts.OutputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "WARN: probe failed for %s: %v\n", node.ID, err)
+			}
+		} else {
+			// Compare probe result with desired state
+			matches, diffs := compareState(observed, node.Desired)
 
-	needsTransfer := append(cs.Create, cs.Update...)
-	if err := streamFiles(src, needsTransfer, enc); err != nil {
-		return false, fmt.Errorf("streaming files: %w", err)
-	}
+			if opts.Observe {
+				if matches {
+					if opts.OutputFormat != "json" {
+						fmt.Printf("node %q → %s:\n  [OK] all fields match desired state\n", node.ID, target.ID)
+					}
+					return false, ObservationResult{
+						Node:     node.ID,
+						Target:   target.ID,
+						Desired:  node.Desired,
+						Observed: observed,
+						InSync:   true,
+					}, nil
+				}
+				if opts.OutputFormat != "json" {
+					printStateDiff(node.ID, target.ID, diffs)
+				}
+				return true, ObservationResult{
+					Node:     node.ID,
+					Target:   target.ID,
+					Desired:  node.Desired,
+					Observed: observed,
+					InSync:   false,
+				}, nil
+			}
 
-	var applyResp proto.ApplyResp
-	if err := readJSON(r, &applyResp); err != nil {
-		return false, fmt.Errorf("apply response: %w", err)
-	}
-	if applyResp.Error != "" {
-		return false, fmt.Errorf("agent apply error: %s", applyResp.Error)
-	}
+			if matches {
+				// Node already in desired state - skip execution
+				if opts.OutputFormat != "json" {
+					fmt.Printf("[%s → %s] ✓ already satisfied (probe matches desired)\n", node.ID, target.ID)
+				}
+				return false, ExecutionResult{
+					Node:   node.ID,
+					Target: target.ID,
+					Status: "satisfied",
+				}, nil
+			}
 
-	res := applyResp.Result
-	fmt.Printf("[%s → %s] %s\n", node.ID, target.ID, res.Message)
-
-	// ── Step 5: Persist state ──────────────────────────────────────────────────
-	contentHash := hashChangeSet(cs)
-	inputsWithAddr := make(map[string]any)
-	for k, v := range node.Inputs {
-		inputsWithAddr[k] = v
-	}
-	inputsWithAddr["__target_addr"] = target.Address
-	
-	dbStatus := res.Status
-	if dbStatus == "success" {
-		dbStatus = "applied"
-	}
-	
-	if err := store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
-	}
-
-	// ── Step 6: Rollback on fatal failure ─────────────────────────────────────
-	if res.Status == "failed" {
-		if res.RollbackSafe {
-			fmt.Printf("[%s → %s] triggering agent-level rollback…\n", node.ID, target.ID)
-			if err := doRollback(addr, node, planHash, cs, opts); err != nil {
-				fmt.Fprintf(os.Stderr, "WARN: rollback error: %v\n", err)
+			// State differs - show diff and proceed to apply
+			if opts.OutputFormat != "json" {
+				for _, d := range diffs {
+					desStr := formatValue(d.Desired)
+					obsStr := formatValue(d.Observed)
+					fmt.Printf("[%s → %s] %s: %s → %s\n", node.ID, target.ID, d.Field, obsStr, desStr)
+				}
 			}
 		}
-		return true, fmt.Errorf("apply failed: %s", res.Message)
 	}
 
-	return true, nil
+	if node.Type == "file.sync" {
+		return runFileSync(ctx, addr, node, resolvedInputs, target, planHash, nodeHash, store, opts)
+	} else if node.Type == "process.exec" {
+		return runProcessExec(ctx, addr, node, resolvedInputs, target, planHash, nodeHash, store, opts)
+	} else if isBuiltin(node.Type) {
+		return runBuiltin(ctx, addr, node, resolvedInputs, target, planHash, nodeHash, store, opts)
+	}
+	return false, nil, fmt.Errorf("unsupported primitive type: %s", node.Type)
 }
 
-func runProcessExec(ctx context.Context, addr string, node plan.Node, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, error) {
-	if opts.DryRun || opts.Observe {
-		cmdArr, _ := node.Inputs["cmd"].([]any)
-		if opts.DryRun {
-			fmt.Printf("[%s → %s] dry-run: would execute %v\n", node.ID, target.ID, cmdArr)
-		} else {
-			fmt.Printf("[%s → %s] observe: node execution required (idempotent=%v)\n", node.ID, target.ID, node.Idempotent)
-		}
-		return true, nil
+func isBuiltin(t string) bool {
+	switch t {
+	case "_fs.write", "_fs.read", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat", "_net.fetch", "_exec":
+		return true
 	}
+	return false
+}
 
+func runBuiltin(ctx context.Context, addr string, node plan.Node, resolvedInputs map[string]any, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, any, error) {
 	conn, err := dialAgent(ctx, addr, opts)
 	if err != nil {
-		return false, fmt.Errorf("connect to agent %s: %w", addr, err)
+		return false, nil, fmt.Errorf("connect to agent %s: %w", addr, err)
 	}
 	defer conn.Close()
 
@@ -508,27 +557,294 @@ func runProcessExec(ctx context.Context, addr string, node plan.Node, target pla
 			PlanHash:  planHash,
 			ChangeSet: proto.ChangeSet{},
 		},
-		Inputs: node.Inputs,
+		Inputs: resolvedInputs,
 	}
 	if err := enc.Encode(applyReq); err != nil {
-		return false, fmt.Errorf("sending apply_req: %w", err)
+		return false, nil, fmt.Errorf("sending apply_req: %w", err)
 	}
 
 	var applyResp proto.ApplyResp
 	if err := readJSON(r, &applyResp); err != nil {
-		return false, fmt.Errorf("apply response: %w", err)
+		return false, nil, fmt.Errorf("apply response: %w", err)
 	}
 	if applyResp.Error != "" {
-		return false, fmt.Errorf("agent apply error: %s", applyResp.Error)
+		return false, nil, fmt.Errorf("agent apply error: %s", applyResp.Error)
 	}
 
 	res := applyResp.Result
-	fmt.Printf("[%s → %s] process exited with code %d\n", node.ID, target.ID, res.ExitCode)
-	if res.Stdout != "" {
-		fmt.Printf("--- stdout ---\n%s\n--------------\n", res.Stdout)
+	if opts.OutputFormat != "json" {
+		fmt.Printf("[%s → %s] builtin %s: %s\n", node.ID, target.ID, node.Type, res.Status)
+		if res.Stdout != "" {
+			fmt.Printf("--- stdout ---\n%s\n--------------\n", res.Stdout)
+		}
+		if res.Stderr != "" {
+			fmt.Printf("--- stderr ---\n%s\n--------------\n", res.Stderr)
+		}
 	}
-	if res.Stderr != "" {
-		fmt.Printf("--- stderr ---\n%s\n--------------\n", res.Stderr)
+
+	contentHash := "builtin_no_cs"
+	inputsWithAddr := make(map[string]any)
+	for k, v := range node.Inputs {
+		inputsWithAddr[k] = v
+	}
+	inputsWithAddr["__target_addr"] = target.Address
+	inputsWithAddr = secret.RedactNodeInputs(inputsWithAddr, node.RequiresSecrets)
+
+	dbStatus := res.Status
+	if dbStatus == "success" {
+		dbStatus = "applied"
+	}
+
+	if err := store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
+	}
+
+	if res.Status == "failed" {
+		return true, ExecutionResult{
+			Node:   node.ID,
+			Target: target.ID,
+			Status: "failed",
+			Error:  res.Message,
+		}, fmt.Errorf("builtin failed: %s", res.Message)
+	}
+
+	return true, ExecutionResult{
+		Node:   node.ID,
+		Target: target.ID,
+		Status: "applied",
+	}, nil
+}
+
+func runFileSync(ctx context.Context, addr string, node plan.Node, resolvedInputs map[string]any, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, any, error) {
+	conn, err := dialAgent(ctx, addr, opts)
+	if err != nil {
+		return false, nil, fmt.Errorf("connect to agent %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	r := bufio.NewReader(conn)
+	enc := json.NewEncoder(conn)
+
+	// ── Step 1: Detect remote state ──────────────────────────────────────────
+	_ = enc.Encode(proto.DetectReq{
+		Type:      "detect_req",
+		NodeID:    node.ID,
+		Primitive: node.Type,
+		Inputs:    resolvedInputs,
+	})
+	var detectResp proto.DetectResp
+	if err := readJSON(r, &detectResp); err != nil {
+		return false, nil, fmt.Errorf("detect response: %w", err)
+	}
+	if detectResp.Error != "" {
+		return false, nil, fmt.Errorf("agent detect error: %s", detectResp.Error)
+	}
+	destTree := detectResp.State
+
+	// ── Step 2: Build source tree (controller-local) ──────────────────────────
+	src, _ := resolvedInputs["src"].(string)
+	srcTree, err := filesync.BuildSourceTree(src)
+	if err != nil {
+		return false, nil, fmt.Errorf("building source tree: %w", err)
+	}
+
+	var deleteExtra bool
+	switch v := resolvedInputs["delete_extra"].(type) {
+	case bool:
+		deleteExtra = v
+	case string:
+		deleteExtra = v == "true"
+	}
+	desiredMode := uint32(0)
+	desiredUID, desiredGID := -1, -1
+
+	cs := filesync.Diff(srcTree, destTree, desiredMode, desiredUID, desiredGID, deleteExtra)
+
+	// ── Step 3: Display diff ──────────────────────────────────────────────────
+	PrintDiff(node.ID, target.ID, cs)
+
+	if filesync.IsEmpty(cs) {
+		if opts.OutputFormat != "json" {
+			fmt.Printf("[%s → %s] ✓ no changes\n", node.ID, target.ID)
+		}
+		if opts.Observe {
+			return false, ObservationResult{Node: node.ID, Target: target.ID, InSync: true}, nil
+		}
+		return false, ExecutionResult{Node: node.ID, Target: target.ID, Status: "applied"}, nil
+	}
+
+	if opts.DryRun || opts.Observe {
+		if opts.OutputFormat != "json" {
+			if opts.DryRun {
+				fmt.Printf("[%s → %s] dry-run: %d change(s) would be applied\n",
+					node.ID, target.ID, totalChanges(cs))
+			} else {
+				fmt.Printf("[%s → %s] observe: %d change(s) detected\n",
+					node.ID, target.ID, totalChanges(cs))
+			}
+		}
+		if opts.Observe {
+			return true, ObservationResult{
+				Node:     node.ID,
+				Target:   target.ID,
+				Desired:  srcTree, // simplified for now
+				Observed: destTree,
+				InSync:   false,
+			}, nil
+		}
+		return true, ExecutionResult{Node: node.ID, Target: target.ID, Status: "dry-run"}, nil
+	}
+
+	// ── Step 4: Apply ─────────────────────────────────────────────────────────
+	conn.Close()
+	conn, err = dialAgent(ctx, addr, opts)
+	if err != nil {
+		return false, nil, fmt.Errorf("re-connect for apply: %w", err)
+	}
+	defer conn.Close()
+	r = bufio.NewReader(conn)
+	enc = json.NewEncoder(conn)
+
+	applyReq := applyReqFull{
+		ApplyReq: proto.ApplyReq{
+			Type:      "apply_req",
+			NodeID:    node.ID,
+			Primitive: node.Type,
+			PlanHash:  planHash,
+			ChangeSet: cs,
+		},
+		Inputs: resolvedInputs,
+	}
+	if err := enc.Encode(applyReq); err != nil {
+		return false, nil, fmt.Errorf("sending apply_req: %w", err)
+	}
+
+	needsTransfer := append(cs.Create, cs.Update...)
+	if err := streamFiles(src, needsTransfer, enc); err != nil {
+		return false, nil, fmt.Errorf("streaming files: %w", err)
+	}
+
+	var applyResp proto.ApplyResp
+	if err := readJSON(r, &applyResp); err != nil {
+		return false, nil, fmt.Errorf("apply response: %w", err)
+	}
+	if applyResp.Error != "" {
+		return false, nil, fmt.Errorf("agent apply error: %s", applyResp.Error)
+	}
+
+	res := applyResp.Result
+	if opts.OutputFormat != "json" {
+		fmt.Printf("[%s → %s] %s\n", node.ID, target.ID, res.Message)
+	}
+
+	// ── Step 5: Persist state ──────────────────────────────────────────────────
+	contentHash := hashChangeSet(cs)
+	inputsWithAddr := make(map[string]any)
+	for k, v := range node.Inputs {
+		inputsWithAddr[k] = v
+	}
+	inputsWithAddr["__target_addr"] = target.Address
+	if node.SideEffects != "" {
+		inputsWithAddr["__side_effects"] = node.SideEffects
+	}
+	inputsWithAddr = secret.RedactNodeInputs(inputsWithAddr, node.RequiresSecrets)
+
+	dbStatus := res.Status
+	if dbStatus == "success" {
+		dbStatus = "applied"
+	}
+
+	if err := store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, contentHash, dbStatus, cs, inputsWithAddr); err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
+	}
+
+	// ── Step 6: Rollback on fatal failure ─────────────────────────────────────
+	if res.Status == "failed" {
+		if res.RollbackSafe {
+			fmt.Printf("[%s → %s] triggering agent-level rollback…\n", node.ID, target.ID)
+			if err := doRollback(addr, node, planHash, cs, opts); err != nil {
+				if opts.OutputFormat != "json" {
+					fmt.Fprintf(os.Stderr, "WARN: rollback error: %v\n", err)
+				}
+			}
+		}
+		return true, ExecutionResult{
+			Node:   node.ID,
+			Target: target.ID,
+			Status: "failed",
+			Error:  res.Message,
+		}, fmt.Errorf("apply failed: %s", res.Message)
+	}
+
+	return true, ExecutionResult{
+		Node:   node.ID,
+		Target: target.ID,
+		Status: "applied",
+	}, nil
+}
+
+func runProcessExec(ctx context.Context, addr string, node plan.Node, resolvedInputs map[string]any, target plan.Target, planHash, nodeHash string, store *state.Store, opts RunOptions) (bool, any, error) {
+	if opts.DryRun || opts.Observe {
+		cmdArr, _ := resolvedInputs["cmd"].([]any)
+		if opts.OutputFormat != "json" {
+			if opts.DryRun {
+				fmt.Printf("[%s → %s] dry-run: would execute %v\n", node.ID, target.ID, cmdArr)
+			} else {
+				fmt.Printf("[%s → %s] observe: node execution required (idempotent=%v)\n", node.ID, target.ID, node.Idempotent)
+			}
+		}
+		if opts.Observe {
+			return true, ObservationResult{
+				Node:     node.ID,
+				Target:   target.ID,
+				Desired:  cmdArr,
+				Observed: "not executed",
+				InSync:   false,
+			}, nil
+		}
+		return true, ExecutionResult{Node: node.ID, Target: target.ID, Status: "dry-run"}, nil
+	}
+
+	conn, err := dialAgent(ctx, addr, opts)
+	if err != nil {
+		return false, nil, fmt.Errorf("connect to agent %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	r := bufio.NewReader(conn)
+	enc := json.NewEncoder(conn)
+
+	applyReq := applyReqFull{
+		ApplyReq: proto.ApplyReq{
+			Type:      "apply_req",
+			NodeID:    node.ID,
+			Primitive: node.Type,
+			PlanHash:  planHash,
+			ChangeSet: proto.ChangeSet{},
+		},
+		Inputs: resolvedInputs,
+	}
+	if err := enc.Encode(applyReq); err != nil {
+		return false, nil, fmt.Errorf("sending apply_req: %w", err)
+	}
+
+	var applyResp proto.ApplyResp
+	if err := readJSON(r, &applyResp); err != nil {
+		return false, nil, fmt.Errorf("apply response: %w", err)
+	}
+	if applyResp.Error != "" {
+		return false, nil, fmt.Errorf("agent apply error: %s", applyResp.Error)
+	}
+
+	res := applyResp.Result
+	if opts.OutputFormat != "json" {
+		fmt.Printf("[%s → %s] process exited with code %d\n", node.ID, target.ID, res.ExitCode)
+		if res.Stdout != "" {
+			fmt.Printf("--- stdout ---\n%s\n--------------\n", res.Stdout)
+		}
+		if res.Stderr != "" {
+			fmt.Printf("--- stderr ---\n%s\n--------------\n", res.Stderr)
+		}
 	}
 
 	contentHash := "process_exec_no_cs"
@@ -540,21 +856,34 @@ func runProcessExec(ctx context.Context, addr string, node plan.Node, target pla
 	if len(node.RollbackCmd) > 0 {
 		inputsWithAddr["__rollback_cmd"] = node.RollbackCmd
 	}
-	
+	if node.SideEffects != "" {
+		inputsWithAddr["__side_effects"] = node.SideEffects
+	}
+	inputsWithAddr = secret.RedactNodeInputs(inputsWithAddr, node.RequiresSecrets)
+
 	dbStatus := res.Status
 	if dbStatus == "success" {
 		dbStatus = "applied"
 	}
-	
+
 	if err := store.Record(node.ID, target.ID, node.Type, planHash, nodeHash, contentHash, dbStatus, proto.ChangeSet{}, inputsWithAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: state record failed: %v\n", err)
 	}
 
 	if res.Status == "failed" {
-		return true, fmt.Errorf("process failed with exit code %d (class: %s)", res.ExitCode, res.Class)
+		return true, ExecutionResult{
+			Node:   node.ID,
+			Target: target.ID,
+			Status: "failed",
+			Error:  fmt.Sprintf("exit code %d: %s", res.ExitCode, res.Message),
+		}, fmt.Errorf("process failed with exit code %d (class: %s)", res.ExitCode, res.Class)
 	}
 
-	return true, nil
+	return true, ExecutionResult{
+		Node:   node.ID,
+		Target: target.ID,
+		Status: "applied",
+	}, nil
 }
 
 // streamFiles sends file chunk messages for the given relative paths.
@@ -616,8 +945,8 @@ func doRollback(addr string, node plan.Node, planHash string, cs proto.ChangeSet
 	}
 	if err := enc.Encode(rollbackFull{
 		RollbackReq: proto.RollbackReq{
-			Type:      "rollback_req",
-			NodeID:    node.ID,
+			Type:        "rollback_req",
+			NodeID:      node.ID,
 			Primitive:   node.Type,
 			PlanHash:    planHash,
 			RollbackCmd: node.RollbackCmd,
@@ -679,14 +1008,68 @@ func RollbackLast(store *state.Store, opts RunOptions) error {
 		return fmt.Errorf("fetch last run: %w", err)
 	}
 	if len(execs) == 0 {
+		if opts.OutputFormat == "json" {
+			b, _ := json.Marshal(RollbackResult{Errors: []string{"no previous run found to rollback"}})
+			fmt.Println(string(b))
+		}
 		return fmt.Errorf("no previous run found to rollback")
 	}
 
+	var res RollbackResult
+	var w *tabwriter.Writer
+
+	if opts.OutputFormat != "json" {
+		fmt.Println("ROLLBACK PLAN")
+		fmt.Println("-------------")
+		w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NODE\tTARGET\tTYPE\tROLLBACK\tREASON")
+	}
+
+	needsConfirm := false
+	var validExecs []state.Execution
 	for _, ex := range execs {
 		if ex.Status != "applied" && ex.Status != "partial" {
 			continue
 		}
-		// Use stored data to reconstruct a node for rollback
+		validExecs = append(validExecs, ex)
+
+		canRollback := "YES"
+		reason := ""
+		if ex.PrimitiveType == "file.sync" {
+			reason = "restoring snapshot"
+		} else if ex.PrimitiveType == "process.exec" {
+			if _, ok := ex.Inputs["__rollback_cmd"]; ok {
+				reason = "using rollback_cmd"
+			} else {
+				se, _ := ex.Inputs["__side_effects"].(string)
+				if se == "" {
+					se = "target"
+				}
+				if se != "none" {
+					canRollback = "NO"
+					reason = fmt.Sprintf("no rollback_cmd; side_effects=%s", se)
+					needsConfirm = true
+				} else {
+					canRollback = "SKIP"
+					reason = "side_effects=none"
+				}
+			}
+		}
+		if opts.OutputFormat != "json" {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ex.NodeID, ex.Target, ex.PrimitiveType, canRollback, reason)
+		}
+	}
+
+	if opts.OutputFormat != "json" {
+		w.Flush()
+		fmt.Println()
+	}
+
+	if needsConfirm && !opts.Confirm {
+		return fmt.Errorf("rollback plan contains irreversible nodes; use --confirm to skip them and proceed")
+	}
+
+	for _, ex := range validExecs {
 		var rbCmd []string
 		if raw, ok := ex.Inputs["__rollback_cmd"]; ok {
 			if list, ok := raw.([]any); ok {
@@ -696,6 +1079,27 @@ func RollbackLast(store *state.Store, opts RunOptions) error {
 			} else if sl, ok := raw.([]string); ok {
 				rbCmd = sl
 			}
+		}
+
+		if ex.PrimitiveType == "process.exec" && len(rbCmd) == 0 {
+			se, _ := ex.Inputs["__side_effects"].(string)
+			if se == "" {
+				se = "target"
+			}
+			if se == "none" {
+				if opts.OutputFormat != "json" {
+					fmt.Printf("[%s → %s] skipped rollback (no side effects)\n", ex.NodeID, ex.Target)
+				}
+				res.Skipped = append(res.Skipped, fmt.Sprintf("%s on %s", ex.NodeID, ex.Target))
+			} else {
+				if opts.OutputFormat != "json" {
+					fmt.Printf("[%s → %s] skipped rollback (irreversible)\n", ex.NodeID, ex.Target)
+				}
+				res.Skipped = append(res.Skipped, fmt.Sprintf("%s on %s (irreversible)", ex.NodeID, ex.Target))
+			}
+			// Record skipped rollback
+			_ = store.Record(ex.NodeID, ex.Target, ex.PrimitiveType, ex.PlanHash, ex.NodeHash, "rollback_cs", "skipped", ex.ChangeSet, ex.Inputs)
+			continue
 		}
 
 		node := plan.Node{
@@ -711,12 +1115,24 @@ func RollbackLast(store *state.Store, opts RunOptions) error {
 		}
 		addr := addressWithPort(addrStr)
 		if err := doRollback(addr, node, ex.PlanHash, ex.ChangeSet, opts); err != nil {
-			fmt.Fprintf(os.Stderr, "WARN: rollback failed for node %s on %s: %v\n", ex.NodeID, ex.Target, err)
+			if opts.OutputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "WARN: rollback failed for node %s on %s: %v\n", ex.NodeID, ex.Target, err)
+			}
+			res.Errors = append(res.Errors, fmt.Sprintf("%s on %s: %v", ex.NodeID, ex.Target, err))
 		} else {
-			fmt.Printf("[%s → %s] successfully rolled back\n", ex.NodeID, ex.Target)
+			if opts.OutputFormat != "json" {
+				fmt.Printf("[%s → %s] successfully rolled back\n", ex.NodeID, ex.Target)
+			}
+			res.RolledBack = append(res.RolledBack, fmt.Sprintf("%s on %s", ex.NodeID, ex.Target))
 			_ = store.Record(ex.NodeID, ex.Target, ex.PrimitiveType, ex.PlanHash, ex.NodeHash, "rollback_cs", "rolled_back", ex.ChangeSet, ex.Inputs)
 		}
 	}
+
+	if opts.OutputFormat == "json" {
+		b, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(b))
+	}
+
 	return nil
 }
 
@@ -753,4 +1169,171 @@ func dialAgent(ctx context.Context, addr string, opts RunOptions) (net.Conn, err
 		Config:    config,
 	}
 	return tlsDialer.DialContext(ctx, "tcp", addr)
+}
+
+// runProbe sends a probe request to the agent and returns the observed state (v1.3+).
+func runProbe(ctx context.Context, addr string, node plan.Node, opts RunOptions) (map[string]any, error) {
+	if node.Probe == nil {
+		return nil, nil // No probe defined
+	}
+
+	conn, err := dialAgent(ctx, addr, opts)
+	if err != nil {
+		return nil, fmt.Errorf("connect for probe: %w", err)
+	}
+	defer conn.Close()
+
+	r := bufio.NewReader(conn)
+	enc := json.NewEncoder(conn)
+
+	probeReq := proto.ProbeReq{
+		Type:      "probe_req",
+		NodeID:    node.ID,
+		Primitive: node.Type,
+		Probe:     node.Probe,
+	}
+	if err := enc.Encode(probeReq); err != nil {
+		return nil, fmt.Errorf("sending probe_req: %w", err)
+	}
+
+	var probeResp proto.ProbeResp
+	if err := readJSON(r, &probeResp); err != nil {
+		return nil, fmt.Errorf("probe response: %w", err)
+	}
+	if probeResp.Error != "" {
+		return nil, fmt.Errorf("agent probe error: %s", probeResp.Error)
+	}
+
+	return probeResp.State, nil
+}
+
+// StateDiff represents a single field difference between observed and desired state.
+type StateDiff struct {
+	Field    string `json:"field"`
+	Observed any    `json:"observed"`
+	Desired  any    `json:"desired"`
+}
+
+// compareState compares observed state from probe with desired state.
+// Returns true if they match, along with a list of differences.
+func compareState(observed, desired map[string]any) (bool, []StateDiff) {
+	var diffs []StateDiff
+
+	for field, desiredVal := range desired {
+		observedVal, exists := observed[field]
+		if !exists {
+			// Field missing in observed state
+			diffs = append(diffs, StateDiff{
+				Field:    field,
+				Observed: nil,
+				Desired:  desiredVal,
+			})
+			continue
+		}
+
+		if !deepEqual(observedVal, desiredVal) {
+			diffs = append(diffs, StateDiff{
+				Field:    field,
+				Observed: observedVal,
+				Desired:  desiredVal,
+			})
+		}
+	}
+
+	return len(diffs) == 0, diffs
+}
+
+// deepEqual compares two values for equality, handling maps and slices.
+func deepEqual(a, b any) bool {
+	// Handle nil cases
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	// Compare maps
+	aMap, aIsMap := a.(map[string]any)
+	bMap, bIsMap := b.(map[string]any)
+	if aIsMap && bIsMap {
+		if len(aMap) != len(bMap) {
+			return false
+		}
+		for k, v := range aMap {
+			if !deepEqual(v, bMap[k]) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Compare slices
+	aSlice, aIsSlice := a.([]any)
+	bSlice, bIsSlice := b.([]any)
+	if aIsSlice && bIsSlice {
+		if len(aSlice) != len(bSlice) {
+			return false
+		}
+		for i := range aSlice {
+			if !deepEqual(aSlice[i], bSlice[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Handle numeric comparisons (JSON numbers can be float64 or int)
+	aFloat, aIsFloat := a.(float64)
+	bFloat, bIsFloat := b.(float64)
+	aInt, aIsInt := a.(int)
+	bInt, bIsInt := b.(int)
+
+	if aIsFloat && bIsInt {
+		return aFloat == float64(bInt)
+	}
+	if aIsInt && bIsFloat {
+		return float64(aInt) == bFloat
+	}
+
+	// Direct comparison for strings, bools, and identical types
+	return a == b
+}
+
+// printStateDiff prints state differences in a human-readable format.
+func printStateDiff(nodeID, targetID string, diffs []StateDiff) {
+	fmt.Printf("node %q → %s:\n", nodeID, targetID)
+	for _, d := range diffs {
+		desStr := formatValue(d.Desired)
+		obsStr := formatValue(d.Observed)
+		if d.Observed == nil {
+			fmt.Printf("  %s: observed=<missing>  desired=%s  [MISMATCH]\n", d.Field, desStr)
+		} else {
+			fmt.Printf("  %s: observed=%s  desired=%s  [MISMATCH]\n", d.Field, obsStr, desStr)
+		}
+	}
+}
+
+// formatValue formats a value for display in diff output.
+func formatValue(v any) string {
+	if v == nil {
+		return "<nil>"
+	}
+	switch val := v.(type) {
+	case string:
+		if len(val) > 50 {
+			return fmt.Sprintf("%q...", val[:50])
+		}
+		return fmt.Sprintf("%q", val)
+	case bool:
+		return fmt.Sprintf("%v", val)
+	case int, int64, float64:
+		return fmt.Sprintf("%v", val)
+	default:
+		b, _ := json.Marshal(v)
+		if len(b) > 50 {
+			return string(b[:50]) + "..."
+		}
+		return string(b)
+	}
 }

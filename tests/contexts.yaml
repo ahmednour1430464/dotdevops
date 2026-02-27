@@ -1,0 +1,18 @@
+contexts:
+  - name: "default"
+    purpose: "testing Stage 1.2 built-ins"
+    trust_level: "high"
+    identity:
+      user: "root"
+      group: "root"
+    privilege:
+      allow_escalation: true
+      sudo_commands: ["*"]
+    filesystem:
+      writable_paths: ["/tmp", "/tmp/builtin_test"]
+    process:
+      allowed_executables: ["/usr/bin/touch", "/usr/bin/ls", "/bin/ls", "/bin/touch", "ls", "touch"]
+    audit:
+      level: "standard"
+      log_stdout: true
+      log_stderr: true

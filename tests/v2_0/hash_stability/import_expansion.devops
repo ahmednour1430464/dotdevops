@@ -1,0 +1,12 @@
+version = "v2.0"
+
+// Import shared definitions
+import "../lib/common.devops"
+
+// Use imported target and function
+node "setup" {
+    type    = process.exec
+    targets = [web1]
+    cmd     = ["setup", app_path("config")]
+    cwd     = "/"
+}

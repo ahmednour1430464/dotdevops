@@ -2,14 +2,13 @@ package agent
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"os/exec"
-	"time"
+	"os"
+	"strings"
 
 	agentcontext "devopsctl/internal/agent/context"
 	"devopsctl/internal/primitive/filesync"
@@ -47,6 +46,8 @@ func handleConn(conn net.Conn, contexts map[string]*agentcontext.ExecutionContex
 			handleApply(line, r, enc, contexts, auditLogger)
 		case "rollback_req":
 			handleRollback(line, enc, contexts, auditLogger)
+		case "probe_req":
+			handleProbe(line, enc, contexts)
 		default:
 			log.Printf("[agent] unknown message type: %s", env.Type)
 		}
@@ -108,8 +109,56 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
 		return
 	}
 
-	if req.Primitive == "process.exec" {
+	// Dispatch based on primitive type
+	switch req.Primitive {
+	case "process.exec":
 		res := executeProcessWithContext(ctx, full.Inputs, req.NodeID, auditLogger)
+		_ = enc.Encode(proto.ApplyResp{
+			Type:   "apply_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
+
+	case "_exec":
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: "_exec",
+			AuditLogger:   auditLogger,
+		}
+		res := handleExec(executor, full.Inputs)
+		_ = enc.Encode(proto.ApplyResp{
+			Type:   "apply_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
+
+	case "_fs.write", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat":
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: req.Primitive,
+			AuditLogger:   auditLogger,
+		}
+		var res proto.Result
+		switch req.Primitive {
+		case "_fs.write":
+			res = handleFSWrite(executor, full.Inputs)
+		case "_fs.mkdir":
+			res = handleFSMkdir(executor, full.Inputs)
+		case "_fs.delete":
+			res = handleFSDelete(executor, full.Inputs)
+		case "_fs.chmod":
+			res = handleFSChmod(executor, full.Inputs)
+		case "_fs.chown":
+			res = handleFSChown(executor, full.Inputs)
+		case "_fs.exists":
+			res = handleFSExists(executor, full.Inputs)
+		case "_fs.stat":
+			res = handleFSStat(executor, full.Inputs)
+		}
 		_ = enc.Encode(proto.ApplyResp{
 			Type:   "apply_resp",
 			NodeID: req.NodeID,
@@ -167,6 +216,7 @@ type applyReqFull struct {
 }
 
 // executeProcessWithContext executes a process primitive with context enforcement.
+// Legacy wrapper for 'process.exec'.
 func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[string]any, 
                                 nodeID string, auditLogger *agentcontext.AuditLogger) proto.Result {
 	executor := &agentcontext.Executor{
@@ -175,65 +225,7 @@ func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[st
 		PrimitiveType: "process.exec",
 		AuditLogger:   auditLogger,
 	}
-
-	var cmdArgs []string
-	if cmdArrRaw, ok := inputs["cmd"].([]any); ok {
-		for _, a := range cmdArrRaw {
-			cmdArgs = append(cmdArgs, fmt.Sprint(a))
-		}
-	} else if cmdArrStr, ok := inputs["cmd"].([]string); ok {
-		cmdArgs = cmdArrStr
-	}
-
-	if len(cmdArgs) == 0 {
-		return proto.Result{
-			Status:       "failed",
-			RollbackSafe: false,
-			Stderr:       "invalid or missing 'cmd' array",
-		}
-	}
-
-	cwd, _ := inputs["cwd"].(string)
-	timeoutSec := float64(0)
-	if t, ok := inputs["timeout"].(float64); ok {
-		timeoutSec = t
-	}
-
-	execCtx := context.Background()
-	timeout := time.Duration(timeoutSec * float64(time.Second))
-
-	result, err := executor.ExecuteCommand(execCtx, cmdArgs, cwd, timeout)
-
-	res := proto.Result{
-		RollbackSafe: false,
-	}
-
-	if result != nil {
-		res.ExitCode = result.ExitCode
-		res.Stdout = result.Stdout
-		res.Stderr = result.Stderr
-	}
-
-	if err != nil {
-		if _, ok := err.(*exec.ExitError); ok {
-			res.Status = "failed"
-			res.Class = "execution_error"
-		} else {
-			res.Status = "failed"
-			res.Class = "context_enforcement_error"
-			if res.Stderr != "" {
-				res.Stderr += "\n"
-			}
-			res.Stderr += err.Error()
-		}
-	} else if result != nil && result.ExitCode == 0 {
-		res.Status = "success"
-	} else {
-		res.Status = "failed"
-		res.Class = "execution_error"
-	}
-
-	return res
+	return handleExec(executor, inputs)
 }
 
 // handleRollback reverts the last apply for the given node.
@@ -247,7 +239,8 @@ func handleRollback(raw []byte, enc *json.Encoder,
 	}
 	req := full.RollbackReq
 
-	if req.Primitive == "process.exec" {
+	switch req.Primitive {
+	case "process.exec":
 		if len(req.RollbackCmd) == 0 {
 			_ = enc.Encode(proto.RollbackResp{
 				Type:   "rollback_resp",
@@ -279,6 +272,39 @@ func handleRollback(raw []byte, enc *json.Encoder,
 			Result: res,
 		})
 		return
+
+	case "_exec":
+		if len(req.RollbackCmd) == 0 {
+			_ = enc.Encode(proto.RollbackResp{
+				Type:   "rollback_resp",
+				NodeID: req.NodeID,
+				Result: proto.Result{Status: "failed", RollbackSafe: false, Message: "_exec has no rollback_cmd for this node"},
+			})
+			return
+		}
+		ctx, err := agentcontext.ResolveContext(req.Primitive, contexts)
+		if err != nil {
+			writeError(enc, "rollback_resp", req.NodeID, fmt.Errorf("context resolution: %w", err))
+			return
+		}
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: "_exec (rollback)",
+			AuditLogger:   auditLogger,
+		}
+		rollbackInputs := map[string]any{
+			"cmd":     req.RollbackCmd,
+			"cwd":     full.Inputs["cwd"],
+			"timeout": full.Inputs["timeout"],
+		}
+		res := handleExec(executor, rollbackInputs)
+		_ = enc.Encode(proto.RollbackResp{
+			Type:   "rollback_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
 	}
 
 	destStr, _ := full.Inputs["dest"].(string)
@@ -304,4 +330,130 @@ func writeError(enc *json.Encoder, msgType, nodeID string, err error) {
 		"node_id": nodeID,
 		"error":   err.Error(),
 	})
+}
+
+// handleProbe evaluates probe expressions and returns observed state (v1.3+).
+func handleProbe(raw []byte, enc *json.Encoder, contexts map[string]*agentcontext.ExecutionContext) {
+	var req proto.ProbeReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeError(enc, "probe_resp", "unknown", err)
+		return
+	}
+
+	// Resolve execution context
+	ctx, err := agentcontext.ResolveContext(req.Primitive, contexts)
+	if err != nil {
+		writeError(enc, "probe_resp", req.NodeID, fmt.Errorf("context resolution: %w", err))
+		return
+	}
+
+	executor := &agentcontext.Executor{
+		Context:       ctx,
+		NodeID:        req.NodeID,
+		PrimitiveType: req.Primitive + " (probe)",
+	}
+
+	// Evaluate each probe field
+	state := make(map[string]any)
+	for fieldName, exprData := range req.Probe {
+		result, err := evaluateProbeExpr(executor, exprData)
+		if err != nil {
+			log.Printf("[agent] probe field %q error: %v", fieldName, err)
+			state[fieldName] = nil // Mark as error/unknown
+		} else {
+			state[fieldName] = result
+		}
+	}
+
+	_ = enc.Encode(proto.ProbeResp{
+		Type:   "probe_resp",
+		NodeID: req.NodeID,
+		State:  state,
+	})
+}
+
+// evaluateProbeExpr evaluates a serialized probe expression.
+// The expression is a map like {"func": "_fs.exists", "args": [{"literal": "/path"}]}
+func evaluateProbeExpr(executor *agentcontext.Executor, exprData any) (any, error) {
+	exprMap, ok := exprData.(map[string]any)
+	if !ok {
+		// It's a literal value, return as-is
+		return exprData, nil
+	}
+
+	// Check if it's a function call
+	funcName, hasFunc := exprMap["func"].(string)
+	if !hasFunc {
+		// It's a plain value or unknown format
+		return exprData, nil
+	}
+
+	// Get arguments
+	argsRaw, _ := exprMap["args"].([]any)
+	var args []any
+	for _, argRaw := range argsRaw {
+		// Recursively evaluate arguments (they might be nested calls)
+		eval, err := evaluateProbeExpr(executor, argRaw)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, eval)
+	}
+
+	// Dispatch to appropriate probe function
+	switch funcName {
+	case "_fs.exists":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("_fs.exists requires 1 argument")
+		}
+		path, _ := args[0].(string)
+		result := handleFSExists(executor, map[string]any{"path": path})
+		if result.Status == "success" {
+			// Parse JSON result from stdout
+			var out map[string]any
+			json.Unmarshal([]byte(result.Stdout), &out)
+			return out["exists"], nil
+		}
+		return nil, fmt.Errorf(result.Stderr)
+
+	case "_fs.stat":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("_fs.stat requires 1 argument")
+		}
+		path, _ := args[0].(string)
+		result := handleFSStat(executor, map[string]any{"path": path})
+		if result.Status == "success" {
+			// Parse JSON result from stdout and return the full stat object
+			var out map[string]any
+			json.Unmarshal([]byte(result.Stdout), &out)
+			return out, nil
+		}
+		return nil, fmt.Errorf(result.Stderr)
+
+	case "_fs.read":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("_fs.read requires 1 argument")
+		}
+		path, _ := args[0].(string)
+		if err := executor.ValidateFilePath(path, agentcontext.FileOpRead); err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(mustOpen(path), 1<<20)) // 1MB limit
+		if err != nil {
+			return nil, err
+		}
+		return string(data), nil
+
+	default:
+		return nil, fmt.Errorf("unknown probe function: %s", funcName)
+	}
+}
+
+// mustOpen is a helper for probe evaluation.
+func mustOpen(path string) io.Reader {
+	f, err := os.Open(path)
+	if err != nil {
+		return strings.NewReader("")
+	}
+	return f
 }

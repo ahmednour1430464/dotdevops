@@ -1,0 +1,18 @@
+version = "v2.0"
+
+import "../lib/common.devops"
+
+// Use imported targets and function
+node "setup-config" {
+    type    = process.exec
+    targets = [web1, web2]
+    cmd     = ["cp", "-r", app_path("config"), "/etc/myapp"]
+    cwd     = "/"
+}
+
+// Use imported step
+node "deploy-api" {
+    type    = deploy_app
+    targets = [web1]
+    app     = "api-service"
+}

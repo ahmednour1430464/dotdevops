@@ -1,0 +1,11 @@
+version = "v2.0"
+
+target "local" { address = "localhost:7700" }
+
+// Calling a function that doesn't exist
+node "test" {
+    type    = process.exec
+    targets = [local]
+    cmd     = ["echo", undefined_function("arg")]
+    cwd     = "/"
+}

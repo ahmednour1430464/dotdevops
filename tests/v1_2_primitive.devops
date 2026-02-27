@@ -1,0 +1,24 @@
+version = "v1.2"
+
+target "local" {
+    address = "127.0.0.1:7700"
+}
+
+primitive "my.touch" {
+    inputs {
+        file = string
+    }
+    body {
+        node "exec" {
+            type = process.exec
+            cmd = ["touch", file]
+            cwd = "/tmp"
+        }
+    }
+}
+
+node "test" {
+    type = my.touch
+    targets = [local]
+    file = "/tmp/primitive_works"
+}

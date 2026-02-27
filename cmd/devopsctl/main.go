@@ -3,6 +3,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,10 @@ import (
 	"devopsctl/internal/agent"
 	"devopsctl/internal/controller"
 	"devopsctl/internal/devlang"
+	"devopsctl/internal/lsp"
+	"devopsctl/internal/pki"
 	"devopsctl/internal/plan"
+	"devopsctl/internal/secret"
 	"devopsctl/internal/state"
 )
 
@@ -26,6 +30,8 @@ func main() {
 		Short:   "Programming-first DevOps execution engine",
 		Version: version,
 	}
+	var globalOutputFormat string
+	root.PersistentFlags().StringVar(&globalOutputFormat, "output", "text", "Output format (text or json)")
 
 	// ── devopsctl apply ───────────────────────────────────────────────────────
 	var dryRun bool
@@ -35,6 +41,8 @@ func main() {
 	var applyTLSCert string
 	var applyTLSKey string
 	var applyTLSCA string
+	var applySecretProvider string
+	var applySecretFile string
 
 	applyCmd := &cobra.Command{
 		Use:   "apply <plan>",
@@ -89,13 +97,19 @@ func main() {
 				return fmt.Errorf("open state store: %w", err)
 			}
 			defer store.Close()
+			sp, err := secret.NewProvider(applySecretProvider, applySecretFile)
+			if err != nil {
+				return fmt.Errorf("secret provider: %w", err)
+			}
 			return controller.Run(p, rawPlan, store, controller.RunOptions{
-				DryRun:      dryRun,
-				Parallelism: parallelism,
-				Resume:      resume,
-				TLSCertPath:  applyTLSCert,
-				TLSKeyPath:   applyTLSKey,
-				TLSCAPath:    applyTLSCA,
+				DryRun:         dryRun,
+				Parallelism:    parallelism,
+				Resume:         resume,
+				TLSCertPath:    applyTLSCert,
+				TLSKeyPath:     applyTLSKey,
+				TLSCAPath:      applyTLSCA,
+				SecretProvider: sp,
+				OutputFormat:   globalOutputFormat,
 			})
 		},
 	}
@@ -106,6 +120,8 @@ func main() {
 	applyCmd.Flags().StringVar(&applyTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
 	applyCmd.Flags().StringVar(&applyTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
 	applyCmd.Flags().StringVar(&applyTLSCA, "tls-ca", "", "Path to CA certificate for mTLS")
+	applyCmd.Flags().StringVar(&applySecretProvider, "secret-provider", "env", "Secret provider: 'env' (default, reads env vars) or 'file'")
+	applyCmd.Flags().StringVar(&applySecretFile, "secret-file", "", "Path to JSON secrets file (required when --secret-provider=file)")
 
 	// ── devopsctl reconcile ───────────────────────────────────────────────────
 	var recDryRun bool
@@ -114,6 +130,8 @@ func main() {
 	var recTLSCert string
 	var recTLSKey string
 	var recTLSCA string
+	var recSecretProvider string
+	var recSecretFile string
 
 	reconcileCmd := &cobra.Command{
 		Use:   "reconcile <plan>",
@@ -167,13 +185,19 @@ func main() {
 				return fmt.Errorf("open state store: %w", err)
 			}
 			defer store.Close()
+			sp, err := secret.NewProvider(recSecretProvider, recSecretFile)
+			if err != nil {
+				return fmt.Errorf("secret provider: %w", err)
+			}
 			return controller.Run(p, rawPlan, store, controller.RunOptions{
-				DryRun:      recDryRun,
-				Parallelism: recParallelism,
-				Reconcile:   true,
-				TLSCertPath:  recTLSCert,
-				TLSKeyPath:   recTLSKey,
-				TLSCAPath:    recTLSCA,
+				DryRun:         recDryRun,
+				Parallelism:    recParallelism,
+				Reconcile:      true,
+				TLSCertPath:    recTLSCert,
+				TLSKeyPath:     recTLSKey,
+				TLSCAPath:      recTLSCA,
+				SecretProvider: sp,
+				OutputFormat:   globalOutputFormat,
 			})
 		},
 	}
@@ -183,6 +207,8 @@ func main() {
 	reconcileCmd.Flags().StringVar(&recTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
 	reconcileCmd.Flags().StringVar(&recTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
 	reconcileCmd.Flags().StringVar(&recTLSCA, "tls-ca", "", "Path to CA certificate for mTLS")
+	reconcileCmd.Flags().StringVar(&recSecretProvider, "secret-provider", "env", "Secret provider: 'env' (default, reads env vars) or 'file'")
+	reconcileCmd.Flags().StringVar(&recSecretFile, "secret-file", "", "Path to JSON secrets file (required when --secret-provider=file)")
 
 	// ── devopsctl agent ───────────────────────────────────────────────────────
 	var agentAddr string
@@ -245,6 +271,11 @@ func main() {
 			execs, err := store.List(stateNode)
 			if err != nil {
 				return err
+			}
+			if globalOutputFormat == "json" {
+				b, _ := json.MarshalIndent(execs, "", "  ")
+				fmt.Println(string(b))
+				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tNODE\tTARGET\tSTATUS\tTIMESTAMP")
@@ -319,10 +350,81 @@ func main() {
 	}
 	planBuildCmd.Flags().StringVarP(&buildOut, "output", "o", "", "Output file for compiled plan JSON (default stdout)")
 	planBuildCmd.Flags().StringVar(&buildLang, "lang", "v0.3", "Language version for .devops files (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
-	planCmd.AddCommand(planHashCmd, planBuildCmd)
+
+	planDiffCmd := &cobra.Command{
+		Use:   "diff <old.plan> <new.plan>",
+		Short: "Show the semantic difference between two plans",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			load := func(p string) (*plan.Plan, error) {
+				if filepath.Ext(p) == ".devops" {
+					src, err := os.ReadFile(p)
+					if err != nil {
+						return nil, err
+					}
+					res, err := devlang.CompileFileAutoDetect(p, src, "v0.8")
+					if err != nil {
+						return nil, err
+					}
+					if len(res.Errors) > 0 {
+						for _, e := range res.Errors {
+							fmt.Fprintln(os.Stderr, "  ✗", e)
+						}
+						return nil, fmt.Errorf("compile failed for %s", p)
+					}
+					return res.Plan, nil
+				}
+				pl, _, err := plan.Load(p)
+				return pl, err
+			}
+			oldPlan, err := load(args[0])
+			if err != nil {
+				return err
+			}
+			newPlan, err := load(args[1])
+			if err != nil {
+				return err
+			}
+
+			diff := plan.Diff(oldPlan, newPlan)
+
+			if globalOutputFormat == "json" {
+				b, _ := json.MarshalIndent(diff, "", "  ")
+				fmt.Println(string(b))
+				if diff.HasChanges() {
+					os.Exit(1)
+				}
+				return nil
+			}
+
+			if !diff.HasChanges() {
+				fmt.Println("No semantic changes.")
+				return nil
+			}
+
+			for _, n := range diff.Added {
+				fmt.Printf("[+] %s\t(Added)\n", n.ID)
+			}
+			for _, n := range diff.Removed {
+				fmt.Printf("[-] %s\t(Removed)\n", n.ID)
+			}
+			for _, d := range diff.Changed {
+				if d.Old.Type != d.New.Type {
+					fmt.Printf("[~] %s\t(Changed: type %s → %s)\n", d.New.ID, d.Old.Type, d.New.Type)
+				} else {
+					fmt.Printf("[~] %s\t(Changed)\n", d.New.ID)
+				}
+			}
+			os.Exit(1)
+			return nil
+		},
+	}
+
+	planCmd.AddCommand(planHashCmd, planBuildCmd, planDiffCmd)
 
 	// ── devopsctl rollback ────────────────────────────────────────────────────
 	var rollbackLast bool
+	var rollbackConfirm bool
 	var rollbackTLSCert string
 	var rollbackTLSKey string
 	var rollbackTLSCA string
@@ -340,13 +442,16 @@ func main() {
 			defer store.Close()
 
 			return controller.RollbackLast(store, controller.RunOptions{
+				Confirm:     rollbackConfirm,
 				TLSCertPath: rollbackTLSCert,
 				TLSKeyPath:  rollbackTLSKey,
 				TLSCAPath:   rollbackTLSCA,
+				OutputFormat: globalOutputFormat,
 			})
 		},
 	}
 	rollbackCmd.Flags().BoolVar(&rollbackLast, "last", false, "Rollback the most recent execution")
+	rollbackCmd.Flags().BoolVar(&rollbackConfirm, "confirm", false, "Confirm rollback of effectful nodes lacking rollback_cmd")
 	rollbackCmd.Flags().StringVar(&rollbackTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
 	rollbackCmd.Flags().StringVar(&rollbackTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
 	rollbackCmd.Flags().StringVar(&rollbackTLSCA, "tls-ca", "", "Path to CA certificate for mTLS")
@@ -404,6 +509,7 @@ func main() {
 				TLSCertPath:  obsTLSCert,
 				TLSKeyPath:   obsTLSKey,
 				TLSCAPath:    obsTLSCA,
+				OutputFormat: globalOutputFormat,
 			})
 		},
 	}
@@ -413,7 +519,74 @@ func main() {
 	observeCmd.Flags().StringVar(&obsTLSKey, "tls-key", "", "Path to client TLS key")
 	observeCmd.Flags().StringVar(&obsTLSCA, "tls-ca", "", "Path to CA certificate")
 
-	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd)
+	// ── devopsctl pki ─────────────────────────────────────────────────────────
+	pkiCmd := &cobra.Command{
+		Use:   "pki",
+		Short: "PKI tools for bootstrapping mTLS certificates",
+	}
+
+	var pkiOutDir string
+	var pkiValidYears int
+	pkiInitCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Generate a self-signed CA and controller/agent leaf certificates for mTLS",
+		Long: `Generates six files in the output directory:
+  ca.crt / ca.key          — self-signed certificate authority
+  controller.crt / .key    — certificate pair for the devopsctl CLI (controller)
+  agent.crt / .key         — certificate pair for the devopsctl agent daemon
+
+Use --tls-cert, --tls-key, --tls-ca on all devopsctl commands to enable mTLS.
+
+IMPORTANT: This tool is for development and homelab use only.
+For production, use certificates from an external CA.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := pki.InitOptions{
+				OutputDir: pkiOutDir,
+				ValidFor:  time.Duration(pkiValidYears) * 365 * 24 * time.Hour,
+			}
+			bundle, err := pki.Init(opts)
+			if err != nil {
+				return fmt.Errorf("pki init: %w", err)
+			}
+			fmt.Println("✓ PKI initialised successfully")
+			fmt.Println()
+			fmt.Printf("  CA certificate : %s\n", bundle.CACert)
+			fmt.Printf("  CA private key : %s  (keep secret)\n", bundle.CAKey)
+			fmt.Printf("  Controller cert: %s\n", bundle.ControllerCert)
+			fmt.Printf("  Controller key : %s  (keep secret)\n", bundle.ControllerKey)
+			fmt.Printf("  Agent cert     : %s\n", bundle.AgentCert)
+			fmt.Printf("  Agent key      : %s  (keep secret)\n", bundle.AgentKey)
+			fmt.Println()
+			fmt.Println("Start the agent with mTLS:")
+			fmt.Printf("  devopsctl agent --tls-cert %s --tls-key %s --tls-ca %s\n",
+				bundle.AgentCert, bundle.AgentKey, bundle.CACert)
+			fmt.Println()
+			fmt.Println("Run commands with mTLS:")
+			fmt.Printf("  devopsctl apply plan.devops --tls-cert %s --tls-key %s --tls-ca %s\n",
+				bundle.ControllerCert, bundle.ControllerKey, bundle.CACert)
+			return nil
+		},
+	}
+	pkiInitCmd.Flags().StringVar(&pkiOutDir, "out", "./pki", "Directory to write generated certificate and key files")
+	pkiInitCmd.Flags().IntVar(&pkiValidYears, "valid-years", 10, "Certificate validity period in years")
+	pkiCmd.AddCommand(pkiInitCmd)
+
+	// ── devopsctl lsp ─────────────────────────────────────────────────────────
+	var lspStdio bool
+	lspCmd := &cobra.Command{
+		Use:   "lsp",
+		Short: "Start Language Server Protocol (LSP) for .devops files",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !lspStdio {
+				return fmt.Errorf("only --stdio mode is supported for now")
+			}
+			return lsp.Serve()
+		},
+	}
+	lspCmd.Flags().BoolVar(&lspStdio, "stdio", false, "Communicate via stdio")
+
+	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd, pkiCmd, lspCmd)
+
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

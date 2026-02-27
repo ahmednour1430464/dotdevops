@@ -1,0 +1,6 @@
+version = "v2.0"
+
+// This file imports circular_import_b which imports back to this file
+import "./circular_import_b.devops"
+
+target "a" { address = "localhost:7700" }

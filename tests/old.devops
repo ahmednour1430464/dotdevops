@@ -1,0 +1,26 @@
+version = "v0.8"
+
+target "local" {
+  address = "localhost:7700"
+}
+
+node "unchanged" {
+  type = file.sync
+  targets = [local]
+  dest = "/tmp/a"
+  src  = "a"
+}
+
+node "removed" {
+  type = file.sync
+  targets = [local]
+  dest = "/tmp/b"
+  src  = "b"
+}
+
+node "changed" {
+  type = file.sync
+  targets = [local]
+  dest = "/tmp/c"
+  src  = "c"
+}

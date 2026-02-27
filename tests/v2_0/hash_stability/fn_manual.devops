@@ -1,0 +1,11 @@
+version = "v2.0"
+
+target "local" { address = "localhost:7700" }
+
+// Manually expanded - should produce the same plan hash
+node "deploy" {
+    type    = process.exec
+    targets = [local]
+    cmd     = ["deploy", "/opt/apps/myapp"]
+    cwd     = "/"
+}

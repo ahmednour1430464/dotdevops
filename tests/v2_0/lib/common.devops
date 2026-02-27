@@ -1,0 +1,18 @@
+version = "v2.0"
+
+// Shared targets
+target "web1" { address = "10.0.0.1:7700" }
+target "web2" { address = "10.0.0.2:7700" }
+
+// Shared function
+fn app_path(name) {
+    "/opt/apps/" + name
+}
+
+// Shared step
+step "deploy_app" {
+    param app
+    type = process.exec
+    cmd = ["deploy", app]
+    cwd = "/"
+}

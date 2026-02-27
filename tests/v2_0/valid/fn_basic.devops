@@ -1,0 +1,28 @@
+version = "v2.0"
+
+target "local" { address = "localhost:7700" }
+
+// Simple function that returns a string
+fn app_path(name) {
+    "/opt/apps/" + name
+}
+
+// Function that uses another function
+fn config_path(app) {
+    app_path(app) + "/config"
+}
+
+// Use the functions in process.exec (no prepare block)
+node "deploy" {
+    type    = process.exec
+    targets = [local]
+    cmd     = ["deploy", "--path", app_path("myapp")]
+    cwd     = "/"
+}
+
+node "setup" {
+    type    = process.exec
+    targets = [local]
+    cmd     = ["cp", "-r", config_path("myapp"), "/etc/config"]
+    cwd     = "/"
+}

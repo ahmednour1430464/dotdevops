@@ -1,0 +1,53 @@
+version = "v1.2"
+
+target "local" {
+    address = "127.0.0.1:7700"
+}
+
+primitive "safe.write" {
+    inputs {
+        dir     = string
+        file    = string
+        content = string
+    }
+    body {
+        node "mkdir" {
+            type = _fs.mkdir
+            path = dir
+        }
+        node "write" {
+            type = _fs.write
+            path = dir + "/" + file
+            content = content
+            depends_on = ["mkdir"]
+        }
+    }
+}
+
+primitive "safe.run" {
+    inputs {
+        cmd = list
+    }
+    body {
+        node "exec" {
+            type = _exec
+            cmd = cmd
+            cwd = "/tmp"
+        }
+    }
+}
+
+node "test_write" {
+    type = safe.write
+    targets = [local]
+    dir = "/tmp/builtin_test"
+    file = "hello.txt"
+    content = "Hello from Stage 1.2 built-ins!"
+}
+
+node "test_exec" {
+    type = safe.run
+    targets = [local]
+    cmd = ["ls", "-l", "/tmp/builtin_test/hello.txt"]
+    depends_on = ["test_write"]
+}

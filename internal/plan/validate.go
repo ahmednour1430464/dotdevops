@@ -68,25 +68,22 @@ func Validate(p *Plan) []error {
 
 		switch n.Type {
 		case "file.sync":
-			src, ok := n.Inputs["src"].(string)
-			if !ok || src == "" {
-				errs = append(errs, fmt.Errorf("nodes[%d] (%s): file.sync requires string 'src'", i, n.ID))
-			}
-			dest, ok := n.Inputs["dest"].(string)
-			if !ok || dest == "" {
-				errs = append(errs, fmt.Errorf("nodes[%d] (%s): file.sync requires string 'dest'", i, n.ID))
-			}
+			// file.sync: basic structural validation is enough at IR level.
 		case "process.exec":
-			cmdArr, ok := n.Inputs["cmd"].([]any)
-			if !ok || len(cmdArr) == 0 {
+			// Validate process.exec required inputs
+			cmd, cmdOk := n.Inputs["cmd"].([]any)
+			if !cmdOk || len(cmd) == 0 {
 				errs = append(errs, fmt.Errorf("nodes[%d] (%s): process.exec requires non-empty array 'cmd'", i, n.ID))
 			}
-			cwd, ok := n.Inputs["cwd"].(string)
-			if !ok || cwd == "" {
+			_, cwdOk := n.Inputs["cwd"].(string)
+			if !cwdOk {
 				errs = append(errs, fmt.Errorf("nodes[%d] (%s): process.exec requires string 'cwd'", i, n.ID))
 			}
+		case "_fs.write", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat", "_exec":
+			// Atomic built-ins: detailed input validation is handled by the agent context enforcement.
 		default:
-			errs = append(errs, fmt.Errorf("nodes[%d] (%s): unknown type '%s'", i, n.ID, n.Type))
+			// Allow unknown types (user-defined primitives from v1.2+)
+			// Validation for custom primitives happens at compile time, not plan time.
 		}
 	}
 

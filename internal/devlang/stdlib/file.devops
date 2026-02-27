@@ -1,0 +1,135 @@
+// Standard library: file primitives (v1.4+)
+// These primitives provide idempotent file operations with probe-based state checking.
+
+version = "v1.4"
+
+// file.write: Write content to a file.
+// This is a simplified version that always writes (no probe-based skip).
+primitive "file.write" {
+    inputs {
+        path    = string    // Destination file path
+        content = string    // File content to write
+        mode    = string    // File mode (e.g., "0644")
+    }
+
+    body {
+        node "write_file" {
+            type    = _fs.write
+            path    = inputs.path
+            content = inputs.content
+            mode    = inputs.mode
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.ensure_dir: Ensure a directory exists.
+primitive "file.ensure_dir" {
+    inputs {
+        path = string  // Directory path to ensure exists
+        mode = string  // Directory mode (e.g., "0755")
+    }
+
+    probe {
+        exists = _fs.exists(inputs.path)
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "mkdir" {
+            type = _fs.mkdir
+            path = inputs.path
+            mode = inputs.mode
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.absent: Ensure a file or directory does not exist.
+primitive "file.absent" {
+    inputs {
+        path = string  // Path to ensure does not exist
+    }
+
+    probe {
+        exists = _fs.exists(inputs.path)
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "delete" {
+            type = _fs.delete
+            path = inputs.path
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.chmod: Set file permissions.
+primitive "file.chmod" {
+    inputs {
+        path = string  // File path
+        mode = string  // Mode (e.g., "0644")
+    }
+
+    body {
+        node "chmod" {
+            type = _fs.chmod
+            path = inputs.path
+            mode = inputs.mode
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.sync: Synchronize a directory from controller to target.
+// Uses prepare block to enumerate files and foreach to expand nodes.
+primitive "file.sync" {
+    inputs {
+        src          = string  // Source directory path on controller
+        dest         = string  // Destination directory path on target
+        mode         = string  // Default file mode (e.g., "0644")
+    }
+
+    prepare {
+        files = _ctrl.readdir(inputs.src)
+    }
+
+    body {
+        foreach file in prepare.files {
+            node "sync-${file.relative_path}" {
+                type    = _fs.write
+                path    = inputs.dest + "/" + file.relative_path
+                content = _ctrl.read(file.absolute_path)
+                mode    = inputs.mode
+            }
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}

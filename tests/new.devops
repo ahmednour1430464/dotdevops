@@ -1,0 +1,26 @@
+version = "v0.8"
+
+target "local" {
+  address = "localhost:7700"
+}
+
+node "unchanged" {
+  type = file.sync
+  targets = [local]
+  dest = "/tmp/a"
+  src  = "a"
+}
+
+node "added" {
+  type = file.sync
+  targets = [local]
+  dest = "/tmp/new"
+  src  = "new"
+}
+
+node "changed" {
+  type = process.exec
+  targets = [local]
+  cmd = ["echo", "changed type and inputs"]
+  cwd = "."
+}

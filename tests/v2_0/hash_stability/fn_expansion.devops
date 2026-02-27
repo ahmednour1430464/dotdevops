@@ -1,0 +1,15 @@
+version = "v2.0"
+
+target "local" { address = "localhost:7700" }
+
+// Using a function to generate a path
+fn app_path(name) {
+    "/opt/apps/" + name
+}
+
+node "deploy" {
+    type    = process.exec
+    targets = [local]
+    cmd     = ["deploy", app_path("myapp")]
+    cwd     = "/"
+}

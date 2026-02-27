@@ -3,7 +3,9 @@ package devlang
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"devopsctl/internal/plan"
 )
@@ -453,6 +455,12 @@ func CompileFileAutoDetect(path string, src []byte, defaultVersion string) (*Com
 	// For v0.7 to v0.9 we'll route to the latest compiler (CompileFileV0_8)
 	case "v0.7", "v0.8", "v0.9":
 		return CompileFileV0_8(path, src)
+	// v1.2+ supports custom primitives, probe/desired (v1.3+), prepare/foreach (v1.4+)
+	case "v1.2", "v1.3", "v1.4":
+		return CompileFileV1_2(path, src)
+	// v2.0+ supports imports and user-defined functions
+	case "v2.0":
+		return CompileFileV2_0(path, src)
 	default:
 		return &CompileResult{Errors: []error{fmt.Errorf("%s: unknown language version %q", path, version)}}, nil
 	}
@@ -2230,4 +2238,289 @@ Plan:    p,
 RawJSON: raw,
 Errors:  nil,
 }, nil
+}
+// ValidateV1_2 enforces v1.2 rules (custom primitives).
+func ValidateV1_2(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl, map[string]*FleetDecl, map[string]*PrimitiveDecl) {
+	// 1. Run v0.8 validations
+	errs, lets, steps, forLoops, fleets := ValidateV0_8(file)
+
+	primitives := map[string]*PrimitiveDecl{}
+	primitiveTypes := map[string]bool{
+		"file.sync":    true, // existing built-ins
+		"process.exec": true, // existing built-ins
+		"_fs.write":    true,
+		"_fs.read":     true,
+		"_fs.mkdir":    true,
+		"_fs.delete":   true,
+		"_fs.chmod":    true,
+		"_fs.chown":    true,
+		"_fs.exists":   true,
+		"_fs.stat":     true,
+		"_net.fetch":   true,
+		"_exec":        true,
+	}
+
+	// Load stdlib primitives and add them to known types
+	stdlibPrims, _ := LoadStdlib()
+	for name := range stdlibPrims {
+		primitiveTypes[name] = true
+	}
+
+	// 2. Collect primitives
+	for _, decl := range file.Decls {
+		p, ok := decl.(*PrimitiveDecl)
+		if !ok {
+			continue
+		}
+
+		if _, exists := primitives[p.Name]; exists {
+			errs = append(errs, &SemanticError{Path: file.Path, Pos: p.Pos(), Msg: fmt.Sprintf("duplicate primitive %q", p.Name)})
+			continue
+		}
+		if primitiveTypes[p.Name] {
+			errs = append(errs, &SemanticError{Path: file.Path, Pos: p.Pos(), Msg: fmt.Sprintf("primitive name %q conflicts with built-in", p.Name)})
+			continue
+		}
+		if _, exists := steps[p.Name]; exists {
+			errs = append(errs, &SemanticError{Path: file.Path, Pos: p.Pos(), Msg: fmt.Sprintf("primitive name %q conflicts with step name", p.Name)})
+			continue
+		}
+		
+		primitives[p.Name] = p
+	}
+
+	if len(errs) > 0 {
+		// Filter out "unknown type" errors from v0.6 logic if the type matches a custom primitive
+		var filtered []error
+		for _, e := range errs {
+			if se, ok := e.(*SemanticError); ok {
+				if strings.HasPrefix(se.Msg, "unknown type ") {
+					// Use Sscanf to just extract the first quoted string
+					var tName string
+					fmt.Sscanf(se.Msg, "unknown type %q", &tName)
+					if tName != "" && (primitives[tName] != nil || primitiveTypes[tName]) {
+						continue // It's a valid custom or built-in primitive
+					}
+				}
+			}
+			filtered = append(filtered, e)
+		}
+		errs = filtered
+	}
+
+	if len(errs) > 0 {
+		return errs, nil, nil, nil, nil, nil
+	}
+
+	// 3. Cycle Detection
+	// Build primitive dependency graph (primitive calls another primitive in its body)
+	adj := map[string][]string{}
+	for name, p := range primitives {
+		for _, bodyDecl := range p.Body {
+			if node, ok := bodyDecl.(*NodeDecl); ok && node.Type != nil {
+				if _, ok := primitives[node.Type.Name]; ok {
+					adj[name] = appendUniqStr(adj[name], node.Type.Name)
+				}
+			}
+		}
+	}
+
+	if cycles := findPrimitiveCycles(adj); len(cycles) > 0 {
+		for _, cycle := range cycles {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  primitives[cycle[0]].Pos(),
+				Msg:  fmt.Sprintf("circular primitive dependency detected: %s", formatCyclePath(cycle)),
+			})
+		}
+	}
+
+	return errs, lets, steps, forLoops, fleets, primitives
+}
+
+func findPrimitiveCycles(adj map[string][]string) [][]string {
+	var cycles [][]string
+	visited := map[string]bool{}
+	recStack := map[string]bool{}
+
+	var dfs func(u string, path []string)
+	dfs = func(u string, path []string) {
+		visited[u] = true
+		recStack[u] = true
+		currPath := append(path, u)
+
+		for _, v := range adj[u] {
+			if !visited[v] {
+				dfs(v, currPath)
+			} else if recStack[v] {
+				// Cycle found: extract cycle from currPath
+				for i, node := range currPath {
+					if node == v {
+						cycle := make([]string, len(currPath)-i)
+						copy(cycle, currPath[i:])
+						cycles = append(cycles, append(cycle, v))
+						break
+					}
+				}
+			}
+		}
+		recStack[u] = false
+	}
+
+	// Process in sorted order for determinism
+	var keys []string
+	for k := range adj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !visited[k] {
+			dfs(k, []string{})
+		}
+	}
+	return cycles
+}
+
+func appendUniqStr(slice []string, s string) []string {
+	for _, x := range slice {
+		if x == s {
+			return slice
+		}
+	}
+	return append(slice, s)
+}
+
+// CompileFileV1_2 runs parse, v1.2 validate, lower with primitives, and IR validation.
+func CompileFileV1_2(path string, src []byte) (*CompileResult, error) {
+	file, parseErrs := ParseFile(path, src)
+	if len(parseErrs) > 0 {
+		return &CompileResult{Errors: parseErrs}, nil
+	}
+
+	semErrs, lets, steps, forLoops, fleets, primitives := ValidateV1_2(file)
+	if len(semErrs) > 0 {
+		return &CompileResult{Errors: semErrs}, nil
+	}
+
+	// Merge stdlib primitives with user-defined primitives
+	mergedPrimitives, err := MergeStdlibPrimitives(primitives)
+	if err != nil {
+		return nil, fmt.Errorf("loading stdlib: %w", err)
+	}
+
+	p, err := LowerToPlanV1_2(file, lets, steps, forLoops, fleets, mergedPrimitives)
+	if err != nil {
+		return nil, err
+	}
+
+	if vErrs := plan.Validate(p); len(vErrs) > 0 {
+		errs := make([]error, len(vErrs))
+		for i, e := range vErrs {
+			errs[i] = fmt.Errorf("%s: error: %v", path, e)
+		}
+		return &CompileResult{Errors: errs}, nil
+	}
+
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompileResult{
+		Plan:    p,
+		RawJSON: raw,
+		Errors:  nil,
+	}, nil
+}
+
+// CompileFileV2_0 runs parse, import resolution, v2.0 validate, lower with functions, and IR validation.
+func CompileFileV2_0(path string, src []byte) (*CompileResult, error) {
+	file, parseErrs := ParseFile(path, src)
+	if len(parseErrs) > 0 {
+		return &CompileResult{Errors: parseErrs}, nil
+	}
+
+	// Resolve imports
+	resolver := NewImportResolver("")
+	absPath, _ := filepath.Abs(path)
+	resolver.Loaded[absPath] = file // Pre-cache the main file with absolute path
+	file.Path = absPath             // Ensure file.Path is absolute for consistent tracking
+	resolvedDecls, importErrs := resolver.ResolveImports(file)
+	if len(importErrs) > 0 {
+		return &CompileResult{Errors: importErrs}, nil
+	}
+
+	// Create a new file with resolved declarations
+	resolvedFile := &File{
+		Path:  file.Path,
+		Decls: resolvedDecls,
+	}
+
+	// Validate with v2.0 rules (extends v1.2)
+	semErrs, lets, steps, forLoops, fleets, primitives, funcs := ValidateV2_0(resolvedFile)
+	if len(semErrs) > 0 {
+		return &CompileResult{Errors: semErrs}, nil
+	}
+
+	// Merge stdlib primitives with user-defined primitives
+	mergedPrimitives, err := MergeStdlibPrimitives(primitives)
+	if err != nil {
+		return nil, fmt.Errorf("loading stdlib: %w", err)
+	}
+
+	p, err := LowerToPlanV2_0(resolvedFile, lets, steps, forLoops, fleets, mergedPrimitives, funcs)
+	if err != nil {
+		return nil, err
+	}
+
+	if vErrs := plan.Validate(p); len(vErrs) > 0 {
+		errs := make([]error, len(vErrs))
+		for i, e := range vErrs {
+			errs[i] = fmt.Errorf("%s: error: %v", path, e)
+		}
+		return &CompileResult{Errors: errs}, nil
+	}
+
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompileResult{
+		Plan:    p,
+		RawJSON: raw,
+		Errors:  nil,
+	}, nil
+}
+
+// FuncEnv maps function names to their declarations.
+type FuncEnv map[string]*FnDecl
+
+// ValidateV2_0 enforces v2.0 language rules, adding imports and user-defined functions.
+func ValidateV2_0(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl, map[string]*FleetDecl, map[string]*PrimitiveDecl, FuncEnv) {
+	var errs []error
+	funcs := FuncEnv{}
+
+	// Collect function declarations
+	for _, decl := range file.Decls {
+		if fnDecl, ok := decl.(*FnDecl); ok {
+			if _, exists := funcs[fnDecl.Name]; exists {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  fnDecl.Pos(),
+					Msg:  fmt.Sprintf("duplicate function %q", fnDecl.Name),
+				})
+				continue
+			}
+			funcs[fnDecl.Name] = fnDecl
+		}
+	}
+
+	// Run v1.2 validation for the rest
+	v1_2Errs, lets, steps, forLoops, fleets, primitives := ValidateV1_2(file)
+
+	// Merge errors
+	errs = append(errs, v1_2Errs...)
+
+	return errs, lets, steps, forLoops, fleets, primitives, funcs
 }

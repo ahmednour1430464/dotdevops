@@ -41,6 +41,14 @@ type RollbackReq struct {
 	RollbackCmd []string `json:"rollback_cmd,omitempty"`
 }
 
+// ProbeReq asks the agent to evaluate probe expressions and return observed state (v1.3+).
+type ProbeReq struct {
+	Type      string         `json:"type"`      // "probe_req"
+	NodeID    string         `json:"node_id"`
+	Primitive string         `json:"primitive"`
+	Probe     map[string]any `json:"probe"`     // Field name -> expression to evaluate
+}
+
 // ChunkMsg carries one fragment of a file being streamed to the agent.
 type ChunkMsg struct {
 	Type string `json:"type"` // "chunk"
@@ -73,6 +81,14 @@ type RollbackResp struct {
 	NodeID string `json:"node_id"`
 	Result Result `json:"result"`
 	Error  string `json:"error,omitempty"`
+}
+
+// ProbeResp is the agent's reply to ProbeReq (v1.3+).
+type ProbeResp struct {
+	Type   string         `json:"type"`   // "probe_resp"
+	NodeID string         `json:"node_id"`
+	State  map[string]any `json:"state"` // Observed values keyed by field name
+	Error  string         `json:"error,omitempty"`
 }
 
 // ---- Shared data structures ----

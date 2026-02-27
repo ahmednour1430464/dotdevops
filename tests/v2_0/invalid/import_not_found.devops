@@ -1,0 +1,6 @@
+version = "v2.0"
+
+// Importing a file that doesn't exist
+import "./nonexistent_file.devops"
+
+target "local" { address = "localhost:7700" }

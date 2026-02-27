@@ -37,13 +37,23 @@ type Node struct {
 	When          *WhenCondition `json:"when,omitempty"`
 	FailurePolicy string         `json:"failure_policy,omitempty"`
 	Inputs        map[string]any `json:"inputs"`
-	
+
 	// v0.8+ node contracts
 	Idempotent  bool         `json:"idempotent,omitempty"`
 	SideEffects string       `json:"side_effects,omitempty"` // "none" | "local" | "external"
 	Retry       *RetryConfig `json:"retry,omitempty"`
 	RollbackCmd []string     `json:"rollback_cmd,omitempty"`
+
+	// v0.9 secret injection: keys that must be resolved from a secret provider at apply-time.
+	// Inputs that depend on secrets are stored as "[SECRET:KEY]" sentinel placeholders in Inputs
+	// and listed here so the controller knows which inputs to resolve before execution.
+	RequiresSecrets []string `json:"requires_secrets,omitempty"`
+
+	// v1.3+ probe and desired state for primitives
+	Probe   map[string]any `json:"probe,omitempty"`   // Serialized probe expressions
+	Desired map[string]any `json:"desired,omitempty"` // Serialized desired state expressions
 }
+
 
 // WhenCondition represents conditional execution rules.
 type WhenCondition struct {
