@@ -54,7 +54,6 @@ type Node struct {
 	Desired map[string]any `json:"desired,omitempty"` // Serialized desired state expressions
 }
 
-
 // WhenCondition represents conditional execution rules.
 type WhenCondition struct {
 	Node    string `json:"node"`
@@ -86,7 +85,7 @@ func (n *Node) Hash(targetID string) string {
 		Retry       *RetryConfig   `json:"retry,omitempty"`
 		RollbackCmd []string       `json:"rollback_cmd,omitempty"`
 	}
-	
+
 	hs := hashStruct{
 		Type:        n.Type,
 		Target:      targetID,
@@ -96,12 +95,12 @@ func (n *Node) Hash(targetID string) string {
 		Retry:       n.Retry,
 		RollbackCmd: n.RollbackCmd,
 	}
-	
+
 	// json.Marshal reliably orders map keys
 	data, err := json.Marshal(hs)
 	if err != nil {
 		panic(fmt.Sprintf("failed to hash node %s: %v", n.ID, err)) // should not happen with basic JSON types
 	}
-	
+
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }

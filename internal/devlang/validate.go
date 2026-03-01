@@ -161,7 +161,7 @@ func ValidateV0_2(file *File) ([]error, LetEnv) {
 
 		// primitive type
 		switch node.Type.Name {
-		case "file.sync", "process.exec":
+		case "file.sync", "process.exec", "template.render", "health.check", "service.ensure", "package.install":
 			// ok
 		default:
 			errs = append(errs, &SemanticError{
@@ -289,7 +289,7 @@ func ValidateV0_1(file *File) []error {
 
 		// primitive type
 		switch node.Type.Name {
-		case "file.sync", "process.exec":
+		case "file.sync", "process.exec", "template.render", "health.check", "service.ensure", "package.install":
 			// ok
 		default:
 			errs = append(errs, &SemanticError{
@@ -525,7 +525,7 @@ func CompileFileV0_2(path string, src []byte) (*CompileResult, error) {
 	if vErrs := plan.Validate(p); len(vErrs) > 0 {
 		errs := make([]error, len(vErrs))
 		for i, e := range vErrs {
-				errs[i] = fmt.Errorf("%s: error: %v", path, e)
+			errs[i] = fmt.Errorf("%s: error: %v", path, e)
 		}
 		return &CompileResult{Errors: errs}, nil
 	}
@@ -693,7 +693,7 @@ func ValidateV0_3(file *File) ([]error, LetEnv) {
 
 		// primitive type
 		switch node.Type.Name {
-		case "file.sync", "process.exec":
+		case "file.sync", "process.exec", "template.render", "health.check", "service.ensure", "package.install":
 			// ok
 		default:
 			errs = append(errs, &SemanticError{
@@ -774,8 +774,11 @@ func ValidateV0_4(file *File) ([]error, LetEnv, map[string]*StepDecl) {
 
 	// Known primitive types for collision detection
 	primitiveTypes := map[string]bool{
-		"file.sync":    true,
-		"process.exec": true,
+		"file.sync":       true,
+		"process.exec":    true,
+		"template.render": true,
+		"health.check":    true,
+		"service.ensure":  true,
 	}
 
 	// 1. Reject unsupported constructs (for and module still not supported in v0.4).
@@ -1109,8 +1112,12 @@ func ValidateV0_5(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl
 
 	// Known primitive types for collision detection
 	primitiveTypes := map[string]bool{
-		"file.sync":    true,
-		"process.exec": true,
+		"file.sync":       true,
+		"process.exec":    true,
+		"template.render": true,
+		"health.check":    true,
+		"service.ensure":  true,
+		"package.install": true,
 	}
 
 	// 1. Reject unsupported constructs (module still not supported in v0.5).
@@ -1617,8 +1624,12 @@ func ValidateV0_6(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl
 
 	// Known primitive types for collision detection
 	primitiveTypes := map[string]bool{
-		"file.sync":    true,
-		"process.exec": true,
+		"file.sync":       true,
+		"process.exec":    true,
+		"template.render": true,
+		"health.check":    true,
+		"service.ensure":  true,
+		"package.install": true,
 	}
 
 	// 1. Reject unsupported constructs (module still not supported in v0.6).
@@ -2062,12 +2073,12 @@ func CompileFileV0_6(path string, src []byte) (*CompileResult, error) {
 
 // ValidateV0_8 enforces v0.8 rules (target fleets, labels, contracts).
 func ValidateV0_8(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl, map[string]*FleetDecl) {
-// First run v0.6 validations (which covers lets, steps, for loops, etc)
-errs, lets, steps, forLoops := ValidateV0_6(file)
+	// First run v0.6 validations (which covers lets, steps, for loops, etc)
+	errs, lets, steps, forLoops := ValidateV0_6(file)
 
-targets := map[string]*TargetDecl{}
-fleets := map[string]*FleetDecl{}
-nodes := map[string]*NodeDecl{}
+	targets := map[string]*TargetDecl{}
+	fleets := map[string]*FleetDecl{}
+	nodes := map[string]*NodeDecl{}
 
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
@@ -2095,150 +2106,151 @@ nodes := map[string]*NodeDecl{}
 		}
 	}
 
-for _, d := range fleets {
-// Fleet must resolve to at least one target
-matched := false
-for _, t := range targets {
-isMatch := true
-for k, v := range d.Match {
-if t.Labels[k] != v {
-isMatch = false
-break
-}
-}
-if isMatch {
-matched = true
-break
-}
-}
-if !matched {
-errs = append(errs, &SemanticError{
-Path: file.Path,
-Pos:  d.Pos(),
-Msg:  fmt.Sprintf("fleet %q match selectors do not match any defined targets", d.Name),
-})
-}
-}
+	for _, d := range fleets {
+		// Fleet must resolve to at least one target
+		matched := false
+		for _, t := range targets {
+			isMatch := true
+			for k, v := range d.Match {
+				if t.Labels[k] != v {
+					isMatch = false
+					break
+				}
+			}
+			if isMatch {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  d.Pos(),
+				Msg:  fmt.Sprintf("fleet %q match selectors do not match any defined targets", d.Name),
+			})
+		}
+	}
 
-for _, node := range nodes {
-// Validate side_effects
-if node.SideEffects != nil {
-se := node.SideEffects.Value
-if se != "none" && se != "local" && se != "external" {
-errs = append(errs, &SemanticError{
-Path: file.Path,
-Pos:  node.SideEffects.Pos(),
-Msg:  fmt.Sprintf("invalid side_effects %q; expected one of: none, local, external", se),
-})
-}
-}
+	for _, node := range nodes {
+		// Validate side_effects
+		if node.SideEffects != nil {
+			se := node.SideEffects.Value
+			if se != "none" && se != "local" && se != "external" {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  node.SideEffects.Pos(),
+					Msg:  fmt.Sprintf("invalid side_effects %q; expected one of: none, local, external", se),
+				})
+			}
+		}
 
-// Validate retry attempts
-if node.Retry != nil && node.Retry.Attempts <= 0 {
-errs = append(errs, &SemanticError{
-Path: file.Path,
-Pos:  node.Pos(), // we don't have pos info directly on Retry struct, use node
-Msg:  "retry attempts must be strictly positive",
-})
-}
+		// Validate retry attempts
+		if node.Retry != nil && node.Retry.Attempts <= 0 {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.Pos(), // we don't have pos info directly on Retry struct, use node
+				Msg:  "retry attempts must be strictly positive",
+			})
+		}
 
-// Validate rollback_cmd type match
-if node.RollbackCmd != nil && node.Type.Name != "process.exec" {
-errs = append(errs, &SemanticError{
-Path: file.Path,
-Pos:  node.RollbackCmd.Pos(),
-Msg:  "rollback_cmd is only supported on process.exec nodes",
-})
-}
+		// Validate rollback_cmd type match
+		if node.RollbackCmd != nil && node.Type.Name != "process.exec" {
+			errs = append(errs, &SemanticError{
+				Path: file.Path,
+				Pos:  node.RollbackCmd.Pos(),
+				Msg:  "rollback_cmd is only supported on process.exec nodes",
+			})
+		}
 
-// In v0.8 targets can be fleet names or explicit targets
-var resolvedTargets []string
-for _, tIdent := range node.Targets {
-isTarget := false
-isFleet := false
-if _, ok := targets[tIdent.Name]; ok {
-isTarget = true
-resolvedTargets = append(resolvedTargets, tIdent.Name)
-}
-if f, ok := fleets[tIdent.Name]; ok {
-isFleet = true
-// resolve fleet to target list
-for _, t := range targets {
-isMatch := true
-for k, v := range f.Match {
-if t.Labels[k] != v {
-isMatch = false
-break
-}
-}
-if isMatch {
-resolvedTargets = append(resolvedTargets, t.Name)
-}
-}
-}
+		// In v0.8 targets can be fleet names or explicit targets
+		var resolvedTargets []string
+		for _, tIdent := range node.Targets {
+			isTarget := false
+			isFleet := false
+			if _, ok := targets[tIdent.Name]; ok {
+				isTarget = true
+				resolvedTargets = append(resolvedTargets, tIdent.Name)
+			}
+			if f, ok := fleets[tIdent.Name]; ok {
+				isFleet = true
+				// resolve fleet to target list
+				for _, t := range targets {
+					isMatch := true
+					for k, v := range f.Match {
+						if t.Labels[k] != v {
+							isMatch = false
+							break
+						}
+					}
+					if isMatch {
+						resolvedTargets = append(resolvedTargets, t.Name)
+					}
+				}
+			}
 
-// If it's a let binding, we already emit error in v0.6 logic
-if _, isLet := lets[tIdent.Name]; !isLet && !isTarget && !isFleet {
-// Don't duplicate the "unknown target" error from ValidateV0_6 unless it's strictly a v0.8 thing
-// actually v0.6 will emit "unknown target" because it doesn't know about fleets!
-// We need to filter out the v0.6 unknown target error if it was a valid fleet.
-}
-}
-}
+			// If it's a let binding, we already emit error in v0.6 logic
+			if _, isLet := lets[tIdent.Name]; !isLet && !isTarget && !isFleet {
+				// Don't duplicate the "unknown target" error from ValidateV0_6 unless it's strictly a v0.8 thing
+				// actually v0.6 will emit "unknown target" because it doesn't know about fleets!
+				// We need to filter out the v0.6 unknown target error if it was a valid fleet.
+			}
+		}
+	}
 
-// Filter out "unknown target" errors from v0.6 if they are valid fleet names
-var filteredErrs []error
-for _, err := range errs {
-if semErr, ok := err.(*SemanticError); ok {
-var tName string
-if n, _ := fmt.Sscanf(semErr.Msg, "unknown target %q", &tName); n == 1 {
-if _, ok := fleets[tName]; ok {
-continue // it's a fleet, suppress error
-}
-}
-}
-filteredErrs = append(filteredErrs, err)
-}
+	// Filter out "unknown target" errors from v0.6 if they are valid fleet names
+	var filteredErrs []error
+	for _, err := range errs {
+		if semErr, ok := err.(*SemanticError); ok {
+			var tName string
+			if n, _ := fmt.Sscanf(semErr.Msg, "unknown target %q", &tName); n == 1 {
+				if _, ok := fleets[tName]; ok {
+					continue // it's a fleet, suppress error
+				}
+			}
+		}
+		filteredErrs = append(filteredErrs, err)
+	}
 
-return filteredErrs, lets, steps, forLoops, fleets
+	return filteredErrs, lets, steps, forLoops, fleets
 }
 
 // CompileFileV0_8 runs parse, v0.8 validate, lower with parameter substitution/fleets, and IR validation.
 func CompileFileV0_8(path string, src []byte) (*CompileResult, error) {
-file, parseErrs := ParseFile(path, src)
-if len(parseErrs) > 0 {
-return &CompileResult{Errors: parseErrs}, nil
+	file, parseErrs := ParseFile(path, src)
+	if len(parseErrs) > 0 {
+		return &CompileResult{Errors: parseErrs}, nil
+	}
+
+	semErrs, lets, steps, forLoops, fleets := ValidateV0_8(file)
+	if len(semErrs) > 0 {
+		return &CompileResult{Errors: semErrs}, nil
+	}
+
+	p, err := LowerToPlanV0_8(file, lets, steps, forLoops, fleets)
+	if err != nil {
+		return nil, err
+	}
+
+	if vErrs := plan.Validate(p); len(vErrs) > 0 {
+		errs := make([]error, len(vErrs))
+		for i, e := range vErrs {
+			errs[i] = fmt.Errorf("%s: error: %v", path, e)
+		}
+		return &CompileResult{Errors: errs}, nil
+	}
+
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompileResult{
+		Plan:    p,
+		RawJSON: raw,
+		Errors:  nil,
+	}, nil
 }
 
-semErrs, lets, steps, forLoops, fleets := ValidateV0_8(file)
-if len(semErrs) > 0 {
-return &CompileResult{Errors: semErrs}, nil
-}
-
-p, err := LowerToPlanV0_8(file, lets, steps, forLoops, fleets)
-if err != nil {
-return nil, err
-}
-
-if vErrs := plan.Validate(p); len(vErrs) > 0 {
-errs := make([]error, len(vErrs))
-for i, e := range vErrs {
-errs[i] = fmt.Errorf("%s: error: %v", path, e)
-}
-return &CompileResult{Errors: errs}, nil
-}
-
-raw, err := json.MarshalIndent(p, "", "  ")
-if err != nil {
-return nil, err
-}
-
-return &CompileResult{
-Plan:    p,
-RawJSON: raw,
-Errors:  nil,
-}, nil
-}
 // ValidateV1_2 enforces v1.2 rules (custom primitives).
 func ValidateV1_2(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl, map[string]*FleetDecl, map[string]*PrimitiveDecl) {
 	// 1. Run v0.8 validations
@@ -2246,18 +2258,22 @@ func ValidateV1_2(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl
 
 	primitives := map[string]*PrimitiveDecl{}
 	primitiveTypes := map[string]bool{
-		"file.sync":    true, // existing built-ins
-		"process.exec": true, // existing built-ins
-		"_fs.write":    true,
-		"_fs.read":     true,
-		"_fs.mkdir":    true,
-		"_fs.delete":   true,
-		"_fs.chmod":    true,
-		"_fs.chown":    true,
-		"_fs.exists":   true,
-		"_fs.stat":     true,
-		"_net.fetch":   true,
-		"_exec":        true,
+		"file.sync":       true, // existing built-ins
+		"process.exec":    true,
+		"template.render": true,
+		"health.check":    true, // existing built-ins
+		"service.ensure":  true,
+		"package.install": true,
+		"_fs.write":       true,
+		"_fs.read":        true,
+		"_fs.mkdir":       true,
+		"_fs.delete":      true,
+		"_fs.chmod":       true,
+		"_fs.chown":       true,
+		"_fs.exists":      true,
+		"_fs.stat":        true,
+		"_net.fetch":      true,
+		"_exec":           true,
 	}
 
 	// Load stdlib primitives and add them to known types
@@ -2285,7 +2301,7 @@ func ValidateV1_2(file *File) ([]error, LetEnv, map[string]*StepDecl, []*ForDecl
 			errs = append(errs, &SemanticError{Path: file.Path, Pos: p.Pos(), Msg: fmt.Sprintf("primitive name %q conflicts with step name", p.Name)})
 			continue
 		}
-		
+
 		primitives[p.Name] = p
 	}
 

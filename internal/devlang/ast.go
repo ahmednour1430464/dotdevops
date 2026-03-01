@@ -74,8 +74,8 @@ func (d *NodeDecl) declNode()     {}
 
 // LetDecl is parsed but rejected in v0.1.
 type LetDecl struct {
-	Name   string
-	Value  Expr
+	Name    string
+	Value   Expr
 	PosInfo Position
 }
 
@@ -96,7 +96,7 @@ func (d *ForDecl) declNode()     {}
 // ParamDecl represents a parameter declaration in a step (v0.6+).
 type ParamDecl struct {
 	Name    string
-	Default Expr     // nil if required parameter
+	Default Expr // nil if required parameter
 	PosInfo Position
 }
 
@@ -114,7 +114,7 @@ func (d *StepDecl) declNode()     {}
 // PrimitiveInputDecl represents an input declaration in a primitive (v1.2+).
 type PrimitiveInputDecl struct {
 	Name    string
-	Type    *Ident   // identifier representing the type (e.g. string, bool, list)
+	Type    *Ident // identifier representing the type (e.g. string, bool, list)
 	PosInfo Position
 }
 
@@ -202,7 +202,7 @@ func (d *ForeachBodyDecl) declNode()     {}
 type PrimitiveDecl struct {
 	Name     string
 	Inputs   []*PrimitiveInputDecl
-	Prepare  *PrepareDecl  // optional prepare block (v1.4+)
+	Prepare  *PrepareDecl // optional prepare block (v1.4+)
 	Body     []Decl
 	Contract *ContractDecl // optional contract block
 	Probe    *ProbeDecl    // optional probe block (v1.3+)
@@ -226,7 +226,8 @@ func (d *ModuleDecl) declNode()     {}
 // ImportDecl represents `import "path"` (v2.0+).
 // Imports all declarations from another .devops file into the current scope.
 type ImportDecl struct {
-	Path    string   // relative or absolute path to the imported file
+	Path    string // relative or absolute path to the imported file
+	Alias   string // optional namespace alias (v2.0+)
 	PosInfo Position
 }
 
@@ -236,9 +237,9 @@ func (d *ImportDecl) declNode()     {}
 // FnDecl represents a user-defined function `fn name(params) { body }` (v2.0+).
 // Functions are expanded at compile-time like macros.
 type FnDecl struct {
-	Name    string       // function name
-	Params  []string     // parameter names (positional, untyped)
-	Body    Expr         // function body expression
+	Name    string   // function name
+	Params  []string // parameter names (positional, untyped)
+	Body    Expr     // function body expression
 	PosInfo Position
 }
 
@@ -357,4 +358,3 @@ type MapLiteral struct {
 
 func (e *MapLiteral) Pos() Position { return e.PosInfo }
 func (e *MapLiteral) exprNode()     {}
-

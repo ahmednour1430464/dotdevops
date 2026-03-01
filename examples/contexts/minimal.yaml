@@ -35,3 +35,29 @@ contexts:
       level: standard
       log_stdout: true
       log_stderr: true
+
+  - name: default
+    purpose: Default context for raw primitives like _exec
+    trust_level: high
+    identity:
+      user: ahmednour
+      group: ahmednour
+    privilege:
+      allow_escalation: false
+    filesystem:
+      readable_paths:
+        - /
+      writable_paths:
+        - /tmp
+        - /home/ahmednour/devopsctl
+    process:
+      denied_executables: []
+      resource_limits:
+        max_processes: 10
+    network:
+      allow_network: true
+      scope: full
+    audit:
+      level: standard
+      log_stdout: true
+      log_stderr: true

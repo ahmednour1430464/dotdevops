@@ -45,7 +45,7 @@ func Apply(inputs map[string]any) proto.Result {
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	
+
 	res := proto.Result{
 		Status:       "success",
 		RollbackSafe: false,
@@ -56,7 +56,7 @@ func Apply(inputs map[string]any) proto.Result {
 	if err != nil {
 		res.Status = "failed"
 		res.Class = "execution_error"
-		
+
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			res.ExitCode = exitErr.ExitCode()
 		} else {
@@ -66,7 +66,7 @@ func Apply(inputs map[string]any) proto.Result {
 			}
 			res.Stderr += err.Error()
 		}
-		
+
 		if ctx.Err() == context.DeadlineExceeded {
 			res.Class = "timeout"
 			if res.Stderr != "" {

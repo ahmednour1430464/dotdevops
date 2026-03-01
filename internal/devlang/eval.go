@@ -15,6 +15,11 @@ func evaluateExpr(e Expr, lets LetEnv, path string) (Expr, error) {
 	case *NumberLiteral:
 		return v, nil
 
+	case *SecretRef:
+		// Secrets are resolved at agent-time, not compile-time.
+		// Pass it through untouched so lower.go can emit the sentinel.
+		return v, nil
+
 	case *ListLiteral:
 		// Evaluate all elements
 		evaluatedElems := make([]Expr, len(v.Elems))

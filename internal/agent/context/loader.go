@@ -37,7 +37,7 @@ func LoadContexts(path string) (map[string]*ExecutionContext, error) {
 	contexts := make(map[string]*ExecutionContext, len(file.Contexts))
 	for i := range file.Contexts {
 		ctx := &file.Contexts[i]
-		
+
 		if err := ValidateContext(ctx); err != nil {
 			return nil, fmt.Errorf("invalid context %q: %w", ctx.Name, err)
 		}

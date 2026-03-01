@@ -34,8 +34,8 @@ type ApplyReq struct {
 
 // RollbackReq asks the agent to undo the last apply for the given node.
 type RollbackReq struct {
-	Type      string `json:"type"` // "rollback_req"
-	NodeID    string `json:"node_id"`
+	Type        string   `json:"type"` // "rollback_req"
+	NodeID      string   `json:"node_id"`
 	Primitive   string   `json:"primitive"`
 	PlanHash    string   `json:"plan_hash"`
 	RollbackCmd []string `json:"rollback_cmd,omitempty"`
@@ -43,10 +43,10 @@ type RollbackReq struct {
 
 // ProbeReq asks the agent to evaluate probe expressions and return observed state (v1.3+).
 type ProbeReq struct {
-	Type      string         `json:"type"`      // "probe_req"
+	Type      string         `json:"type"` // "probe_req"
 	NodeID    string         `json:"node_id"`
 	Primitive string         `json:"primitive"`
-	Probe     map[string]any `json:"probe"`     // Field name -> expression to evaluate
+	Probe     map[string]any `json:"probe"` // Field name -> expression to evaluate
 }
 
 // ChunkMsg carries one fragment of a file being streamed to the agent.
@@ -85,7 +85,7 @@ type RollbackResp struct {
 
 // ProbeResp is the agent's reply to ProbeReq (v1.3+).
 type ProbeResp struct {
-	Type   string         `json:"type"`   // "probe_resp"
+	Type   string         `json:"type"` // "probe_resp"
 	NodeID string         `json:"node_id"`
 	State  map[string]any `json:"state"` // Observed values keyed by field name
 	Error  string         `json:"error,omitempty"`
@@ -95,13 +95,13 @@ type ProbeResp struct {
 
 // FileMeta holds all metadata for a single file.
 type FileMeta struct {
-	Path    string `json:"path"`
-	Size    int64  `json:"size"`
-	SHA256  string `json:"sha256"`
-	Mode    uint32 `json:"mode"`
-	UID     int    `json:"uid"`
-	GID     int    `json:"gid"`
-	IsDir   bool   `json:"is_dir"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+	Mode   uint32 `json:"mode"`
+	UID    int    `json:"uid"`
+	GID    int    `json:"gid"`
+	IsDir  bool   `json:"is_dir"`
 }
 
 // FileTree maps relative paths to their metadata.
@@ -119,12 +119,12 @@ type ChangeSet struct {
 
 // Result is a structured outcome from apply or rollback.
 type Result struct {
-	Status       string   `json:"status"` // "success", "failed", "partial"
-	Class        string   `json:"class,omitempty"` // e.g., "transient", "fatal"
-	ExitCode     int      `json:"exit_code,omitempty"`
-	Stdout       string   `json:"stdout,omitempty"`
-	Stderr       string   `json:"stderr,omitempty"`
-	RollbackSafe bool     `json:"rollback_safe"`
+	Status       string `json:"status"`          // "success", "failed", "partial"
+	Class        string `json:"class,omitempty"` // e.g., "transient", "fatal"
+	ExitCode     int    `json:"exit_code,omitempty"`
+	Stdout       string `json:"stdout,omitempty"`
+	Stderr       string `json:"stderr,omitempty"`
+	RollbackSafe bool   `json:"rollback_safe"`
 
 	// Legacy capabilities used by filesync
 	Message string   `json:"message,omitempty"`

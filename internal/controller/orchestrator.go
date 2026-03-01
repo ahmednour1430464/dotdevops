@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
@@ -47,6 +48,7 @@ type RunOptions struct {
 	Confirm bool // Automatically confirm dangerous rollback skips
 
 	OutputFormat string // "text" or "json"
+	Timeout      time.Duration
 }
 
 // ExecutionResult represents the outcome of a single node/target execution.
@@ -120,6 +122,11 @@ func Run(p *plan.Plan, rawPlan []byte, store *state.Store, opts RunOptions) erro
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if opts.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		// No need to defer this specific cancel since the outer defer will catch the combined function
+	}
 
 	haltExecution := false
 
@@ -533,7 +540,10 @@ func runNode(ctx context.Context, node plan.Node, target plan.Target, planHash, 
 
 func isBuiltin(t string) bool {
 	switch t {
-	case "_fs.write", "_fs.read", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat", "_net.fetch", "_exec":
+	case "_fs.write", "_fs.read", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat",
+		"_net.fetch", "_exec",
+		"template.render",
+		"health.check", "service.ensure", "package.install":
 		return true
 	}
 	return false
@@ -1066,7 +1076,24 @@ func RollbackLast(store *state.Store, opts RunOptions) error {
 	}
 
 	if needsConfirm && !opts.Confirm {
-		return fmt.Errorf("rollback plan contains irreversible nodes; use --confirm to skip them and proceed")
+		if opts.OutputFormat == "json" {
+			b, _ := json.MarshalIndent(RollbackResult{Errors: []string{"rollback plan contains irreversible nodes; use --confirm to skip them and proceed"}}, "", "  ")
+			fmt.Println(string(b))
+			return fmt.Errorf("rollback plan contains irreversible nodes; use --confirm to skip them and proceed")
+		}
+
+		fmt.Print("Rollback plan contains irreversible nodes. Type 'yes' to skip them and proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		
+		input = strings.TrimSpace(strings.ToLower(input))
+		if input != "yes" && input != "y" {
+			return fmt.Errorf("rollback aborted by user")
+		}
+		fmt.Println()
 	}
 
 	for _, ex := range validExecs {

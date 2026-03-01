@@ -1,0 +1,13 @@
+version = "v1.2"
+
+target "local" {
+	address = "127.0.0.1:7700"
+}
+
+node "ensure_journald" {
+	type = service.ensure
+	targets = [local]
+	
+	name = "systemd-journald"
+	state = "started"
+}

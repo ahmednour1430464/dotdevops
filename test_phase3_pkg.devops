@@ -1,0 +1,13 @@
+version = "v1.2"
+
+target "local" {
+	address = "127.0.0.1:7700"
+}
+
+node "install_curl" {
+	type = package.install
+	targets = [local]
+	
+	name = "curl"
+	state = "present"
+}

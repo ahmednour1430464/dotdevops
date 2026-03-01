@@ -48,6 +48,8 @@ func handleConn(conn net.Conn, contexts map[string]*agentcontext.ExecutionContex
 			handleRollback(line, enc, contexts, auditLogger)
 		case "probe_req":
 			handleProbe(line, enc, contexts)
+		case "status_req":
+			handleStatus(enc, contexts)
 		default:
 			log.Printf("[agent] unknown message type: %s", env.Type)
 		}
@@ -91,9 +93,9 @@ func handleDetect(raw []byte, enc *json.Encoder, contexts map[string]*agentconte
 
 // handleApply reads the ApplyReq, then reads file chunks from the reader,
 // applies them, and sends the result.
-func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder, 
-                 contexts map[string]*agentcontext.ExecutionContext, 
-                 auditLogger *agentcontext.AuditLogger) {
+func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
+	contexts map[string]*agentcontext.ExecutionContext,
+	auditLogger *agentcontext.AuditLogger) {
 	var full applyReqFull
 	if err := json.Unmarshal(raw, &full); err != nil {
 		writeError(enc, "apply_resp", "unknown", err)
@@ -104,7 +106,7 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
 	// Resolve execution context for this primitive
 	ctx, err := agentcontext.ResolveContext(req.Primitive, contexts)
 	if err != nil {
-		writeError(enc, "apply_resp", req.NodeID, 
+		writeError(enc, "apply_resp", req.NodeID,
 			fmt.Errorf("context resolution: %w", err))
 		return
 	}
@@ -165,6 +167,64 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
 			Result: res,
 		})
 		return
+
+	case "template.render":
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: "template.render",
+			AuditLogger:   auditLogger,
+		}
+		res := handleTemplateRender(executor, full.Inputs)
+		_ = enc.Encode(proto.ApplyResp{
+			Type:   "apply_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
+
+	case "health.check":
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: "health.check",
+			AuditLogger:   auditLogger,
+		}
+		res := handleHealthCheck(executor, full.Inputs)
+		_ = enc.Encode(proto.ApplyResp{
+			Type:   "apply_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
+	case "service.ensure":
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: "service.ensure",
+			AuditLogger:   auditLogger,
+		}
+		res := handleServiceEnsure(executor, full.Inputs)
+		_ = enc.Encode(proto.ApplyResp{
+			Type:   "apply_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
+	case "package.install":
+		executor := &agentcontext.Executor{
+			Context:       ctx,
+			NodeID:        req.NodeID,
+			PrimitiveType: "package.install",
+			AuditLogger:   auditLogger,
+		}
+		res := handlePackageInstall(executor, full.Inputs)
+		_ = enc.Encode(proto.ApplyResp{
+			Type:   "apply_resp",
+			NodeID: req.NodeID,
+			Result: res,
+		})
+		return
 	}
 
 	// file.sync with context validation
@@ -198,7 +258,7 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
 		"dest": destStr,
 		"mode": fmt.Sprint(full.Inputs["mode"]),
 	}, chunkReader) // filesync compatibility wrapper
-	
+
 	// Convert filesync Result to standard typed Result (already has Status now)
 	result.RollbackSafe = true // File sync allows rollback
 
@@ -217,8 +277,8 @@ type applyReqFull struct {
 
 // executeProcessWithContext executes a process primitive with context enforcement.
 // Legacy wrapper for 'process.exec'.
-func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[string]any, 
-                                nodeID string, auditLogger *agentcontext.AuditLogger) proto.Result {
+func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[string]any,
+	nodeID string, auditLogger *agentcontext.AuditLogger) proto.Result {
 	executor := &agentcontext.Executor{
 		Context:       ctx,
 		NodeID:        nodeID,
@@ -229,9 +289,9 @@ func executeProcessWithContext(ctx *agentcontext.ExecutionContext, inputs map[st
 }
 
 // handleRollback reverts the last apply for the given node.
-func handleRollback(raw []byte, enc *json.Encoder, 
-                    contexts map[string]*agentcontext.ExecutionContext, 
-                    auditLogger *agentcontext.AuditLogger) {
+func handleRollback(raw []byte, enc *json.Encoder,
+	contexts map[string]*agentcontext.ExecutionContext,
+	auditLogger *agentcontext.AuditLogger) {
 	var full rollbackReqFull
 	if err := json.Unmarshal(raw, &full); err != nil {
 		writeError(enc, "rollback_resp", "unknown", err)
@@ -253,7 +313,7 @@ func handleRollback(raw []byte, enc *json.Encoder,
 		// Identify execution context
 		ctx, err := agentcontext.ResolveContext(req.Primitive, contexts)
 		if err != nil {
-			writeError(enc, "rollback_resp", req.NodeID, 
+			writeError(enc, "rollback_resp", req.NodeID,
 				fmt.Errorf("context resolution: %w", err))
 			return
 		}
@@ -456,4 +516,19 @@ func mustOpen(path string) io.Reader {
 		return strings.NewReader("")
 	}
 	return f
+}
+
+// handleStatus returns agent health and context info.
+func handleStatus(enc *json.Encoder, contexts map[string]*agentcontext.ExecutionContext) {
+	loaded := []string{}
+	for name := range contexts {
+		loaded = append(loaded, name)
+	}
+	_ = enc.Encode(map[string]any{
+		"type":            "status_resp",
+		"status":          "ok",
+		"version":         "0.7.0", // Hardcoded for now, ideally passed in via build flags
+		"contexts_loaded": len(contexts),
+		"context_names":   loaded,
+	})
 }

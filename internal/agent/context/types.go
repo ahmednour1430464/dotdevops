@@ -2,15 +2,15 @@ package context
 
 // ExecutionContext defines the security and runtime envelope for primitive execution.
 type ExecutionContext struct {
-	Name       string           `yaml:"name" json:"name"`                 // Stable identifier (e.g., "safe_user_space")
-	Purpose    string           `yaml:"purpose" json:"purpose"`           // Human-readable intent
-	TrustLevel TrustLevel       `yaml:"trust_level" json:"trust_level"`   // Low / Medium / High
-	Identity   IdentityConfig   `yaml:"identity" json:"identity"`         // User, group, UID/GID
-	Privilege  PrivilegeConfig  `yaml:"privilege" json:"privilege"`       // Escalation rules
-	Filesystem FilesystemConfig `yaml:"filesystem" json:"filesystem"`     // Path restrictions
-	Process    ProcessConfig    `yaml:"process" json:"process"`           // Executable controls
-	Network    NetworkConfig    `yaml:"network" json:"network"`           // Network access rules
-	Audit      AuditConfig      `yaml:"audit" json:"audit"`               // Logging requirements
+	Name       string           `yaml:"name" json:"name"`               // Stable identifier (e.g., "safe_user_space")
+	Purpose    string           `yaml:"purpose" json:"purpose"`         // Human-readable intent
+	TrustLevel TrustLevel       `yaml:"trust_level" json:"trust_level"` // Low / Medium / High
+	Identity   IdentityConfig   `yaml:"identity" json:"identity"`       // User, group, UID/GID
+	Privilege  PrivilegeConfig  `yaml:"privilege" json:"privilege"`     // Escalation rules
+	Filesystem FilesystemConfig `yaml:"filesystem" json:"filesystem"`   // Path restrictions
+	Process    ProcessConfig    `yaml:"process" json:"process"`         // Executable controls
+	Network    NetworkConfig    `yaml:"network" json:"network"`         // Network access rules
+	Audit      AuditConfig      `yaml:"audit" json:"audit"`             // Logging requirements
 }
 
 // TrustLevel defines the security trust level of an execution context.

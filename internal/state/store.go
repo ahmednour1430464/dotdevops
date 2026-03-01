@@ -200,7 +200,7 @@ func (s *Store) LastRun() ([]Execution, error) {
 		}
 		return nil, err
 	}
-	
+
 	rows, err := s.db.Query(
 		`SELECT id, node_id, target, primitive_type, plan_hash, node_hash, content_hash, timestamp, status, changeset_json, inputs_json
 		 FROM executions WHERE plan_hash = ? ORDER BY id DESC`,

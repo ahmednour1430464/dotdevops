@@ -235,8 +235,22 @@ func (p *Parser) parseImportDecl() Decl {
 		p.addError("expected import path string", p.cur.Pos)
 		return &ImportDecl{PosInfo: startPos}
 	}
+	path := p.cur.Lexeme
+
+	alias := ""
+	if p.peek.Type == KW_AS {
+		p.nextToken() // cur = 'as'
+		p.nextToken() // cur = alias
+		if p.cur.Type != IDENT {
+			p.addError("expected namespace alias identifier after 'as'", p.cur.Pos)
+		} else {
+			alias = p.cur.Lexeme
+		}
+	}
+
 	return &ImportDecl{
-		Path:    p.cur.Lexeme,
+		Path:    path,
+		Alias:   alias,
 		PosInfo: startPos,
 	}
 }
@@ -490,7 +504,7 @@ func (p *Parser) parseNodeDecl() Decl {
 
 func (p *Parser) parseRetryConfig() *RetryConfig {
 	res := &RetryConfig{}
-	
+
 	// current is '{'
 	for {
 		p.nextToken()
@@ -528,7 +542,7 @@ func (p *Parser) parseRetryConfig() *RetryConfig {
 			p.addError(fmt.Sprintf("unknown retry field %q", key), p.cur.Pos)
 		}
 	}
-	
+
 	return res
 }
 
@@ -548,8 +562,8 @@ func (p *Parser) parseLetDecl() Decl {
 	p.nextToken()
 	value := p.parseExpr()
 	return &LetDecl{
-		Name:   nameTok.Lexeme,
-		Value:  value,
+		Name:    nameTok.Lexeme,
+		Value:   value,
 		PosInfo: startPos,
 	}
 }
@@ -621,8 +635,8 @@ func (p *Parser) parseStepDecl() Decl {
 		if needNextToken {
 			p.nextToken()
 		}
-		needNextToken = true  // Reset for next iteration
-		
+		needNextToken = true // Reset for next iteration
+
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
 			// Empty step body
 			return &StepDecl{
@@ -632,7 +646,7 @@ func (p *Parser) parseStepDecl() Decl {
 				PosInfo: startPos,
 			}
 		}
-		
+
 		// Check if this is a param declaration
 		if p.cur.Type == KW_PARAM {
 			if seenBodyField {
@@ -640,7 +654,7 @@ func (p *Parser) parseStepDecl() Decl {
 				p.synchronize()
 				break
 			}
-			
+
 			paramPos := p.cur.Pos
 			p.nextToken()
 			if p.cur.Type != IDENT {
@@ -648,22 +662,22 @@ func (p *Parser) parseStepDecl() Decl {
 				p.synchronize()
 				continue
 			}
-			
+
 			paramName := p.cur.Lexeme
 			p.nextToken()
-			
+
 			var defaultExpr Expr
 			if p.cur.Type == EQUAL {
 				// Optional parameter with default
 				p.nextToken()
 				defaultExpr = p.parseExpr()
-				p.nextToken()  // Move past expression
-				needNextToken = false  // We've already advanced
+				p.nextToken()         // Move past expression
+				needNextToken = false // We've already advanced
 			} else {
 				// No default - p.cur is already at the next token
-				needNextToken = false  // Don't advance again at loop start
+				needNextToken = false // Don't advance again at loop start
 			}
-			
+
 			params = append(params, &ParamDecl{
 				Name:    paramName,
 				Default: defaultExpr,
@@ -671,7 +685,7 @@ func (p *Parser) parseStepDecl() Decl {
 			})
 			continue
 		}
-		
+
 		// Not a param, so we've entered the step body section
 		seenBodyField = true
 		break
@@ -776,7 +790,7 @@ func (p *Parser) parseStepDecl() Decl {
 		default:
 			node.Inputs[key] = p.parseExpr()
 		}
-		
+
 		p.nextToken()
 	}
 
@@ -849,7 +863,7 @@ func (p *Parser) parsePrimitiveDecl() Decl {
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
 			break
 		}
-		
+
 		switch p.cur.Type {
 		case KW_INPUTS:
 			decl.Inputs = p.parsePrimitiveInputs()
@@ -884,7 +898,7 @@ func (p *Parser) parsePrimitiveInputs() []*PrimitiveInputDecl {
 		p.addError("expected '{' after 'inputs'", p.cur.Pos)
 		return nil
 	}
-	
+
 	var inputs []*PrimitiveInputDecl
 	for {
 		p.nextToken()
@@ -901,20 +915,20 @@ func (p *Parser) parsePrimitiveInputs() []*PrimitiveInputDecl {
 		}
 		name := p.cur.Lexeme
 		pos := p.cur.Pos
-		
+
 		p.nextToken()
 		if p.cur.Type != EQUAL {
 			p.addError("expected '=' after input name", p.cur.Pos)
 			continue
 		}
-		
+
 		p.nextToken()
 		if p.cur.Type != IDENT {
 			p.addError("expected type identifier (e.g. string, bool, list)", p.cur.Pos)
 			continue
 		}
 		typ := &Ident{Name: p.cur.Lexeme, PosInfo: p.cur.Pos}
-		
+
 		inputs = append(inputs, &PrimitiveInputDecl{
 			Name:    name,
 			Type:    typ,
@@ -930,7 +944,7 @@ func (p *Parser) parsePrimitiveBody() []Decl {
 		p.addError("expected '{' after 'body'", p.cur.Pos)
 		return nil
 	}
-	
+
 	var body []Decl
 	for {
 		p.nextToken()
@@ -965,9 +979,9 @@ func (p *Parser) parsePrimitiveContract() *ContractDecl {
 		p.addError("expected '{' after 'contract'", p.cur.Pos)
 		return nil
 	}
-	
+
 	contract := &ContractDecl{PosInfo: startPos}
-	
+
 	for {
 		p.nextToken()
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
@@ -981,13 +995,13 @@ func (p *Parser) parsePrimitiveContract() *ContractDecl {
 			continue
 		}
 		fieldName := p.cur.Lexeme
-		
+
 		p.nextToken()
 		if p.cur.Type != EQUAL {
 			p.addError("expected '=' after contract field name", p.cur.Pos)
 			continue
 		}
-		
+
 		p.nextToken()
 		switch fieldName {
 		case "idempotent":
@@ -1019,7 +1033,7 @@ func (p *Parser) parsePrimitiveContract() *ContractDecl {
 			p.addError(fmt.Sprintf("unknown contract field %q", fieldName), p.cur.Pos)
 		}
 	}
-	
+
 	return contract
 }
 
@@ -1032,9 +1046,9 @@ func (p *Parser) parsePrimitiveProbe() *ProbeDecl {
 		p.addError("expected '{' after 'probe'", p.cur.Pos)
 		return nil
 	}
-	
+
 	probe := &ProbeDecl{PosInfo: startPos}
-	
+
 	for {
 		p.nextToken()
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
@@ -1049,23 +1063,23 @@ func (p *Parser) parsePrimitiveProbe() *ProbeDecl {
 		}
 		fieldName := p.cur.Lexeme
 		fieldPos := p.cur.Pos
-		
+
 		p.nextToken()
 		if p.cur.Type != EQUAL {
 			p.addError("expected '=' after probe field name", p.cur.Pos)
 			continue
 		}
-		
+
 		p.nextToken()
 		expr := p.parseExpr()
-		
+
 		probe.Fields = append(probe.Fields, &ProbeField{
 			Name:    fieldName,
 			Expr:    expr,
 			PosInfo: fieldPos,
 		})
 	}
-	
+
 	return probe
 }
 
@@ -1078,9 +1092,9 @@ func (p *Parser) parsePrimitiveDesired() *DesiredDecl {
 		p.addError("expected '{' after 'desired'", p.cur.Pos)
 		return nil
 	}
-	
+
 	desired := &DesiredDecl{PosInfo: startPos}
-	
+
 	for {
 		p.nextToken()
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
@@ -1095,23 +1109,23 @@ func (p *Parser) parsePrimitiveDesired() *DesiredDecl {
 		}
 		fieldName := p.cur.Lexeme
 		fieldPos := p.cur.Pos
-		
+
 		p.nextToken()
 		if p.cur.Type != EQUAL {
 			p.addError("expected '=' after desired field name", p.cur.Pos)
 			continue
 		}
-		
+
 		p.nextToken()
 		expr := p.parseExpr()
-		
+
 		desired.Fields = append(desired.Fields, &DesiredField{
 			Name:    fieldName,
 			Expr:    expr,
 			PosInfo: fieldPos,
 		})
 	}
-	
+
 	return desired
 }
 
@@ -1286,33 +1300,32 @@ func (p *Parser) parseSecretRef(startPos Position) Expr {
 func (p *Parser) parseFunctionCall(nameTok Token) Expr {
 	startPos := nameTok.Pos
 	funcName := nameTok.Lexeme
-	
+
 	p.nextToken() // consume '('
 	p.nextToken() // move to first argument or ')'
-	
+
 	var args []Expr
 	for p.cur.Type != RPAREN && p.cur.Type != EOF {
 		arg := p.parseExpr()
 		args = append(args, arg)
-		
+
 		p.nextToken()
 		if p.cur.Type == COMMA {
 			p.nextToken()
 			continue
 		}
 	}
-	
+
 	if p.cur.Type != RPAREN {
 		p.addError("expected ')' after function arguments", p.cur.Pos)
 	}
-	
+
 	return &FunctionCall{
 		Name:    funcName,
 		Args:    args,
 		PosInfo: startPos,
 	}
 }
-
 
 func (p *Parser) parseListLiteral() Expr {
 	startPos := p.cur.Pos
@@ -1350,9 +1363,9 @@ func (p *Parser) parsePrimitivePrepare() *PrepareDecl {
 		p.addError("expected '{' after 'prepare'", p.cur.Pos)
 		return nil
 	}
-	
+
 	prepare := &PrepareDecl{PosInfo: startPos}
-	
+
 	for {
 		p.nextToken()
 		if p.cur.Type == RBRACE || p.cur.Type == EOF {
@@ -1367,23 +1380,23 @@ func (p *Parser) parsePrimitivePrepare() *PrepareDecl {
 		}
 		varName := p.cur.Lexeme
 		varPos := p.cur.Pos
-		
+
 		p.nextToken()
 		if p.cur.Type != EQUAL {
 			p.addError("expected '=' after variable name in prepare block", p.cur.Pos)
 			continue
 		}
-		
+
 		p.nextToken()
 		expr := p.parseExpr()
-		
+
 		prepare.Bindings = append(prepare.Bindings, &PrepareBinding{
 			Name:    varName,
 			Expr:    expr,
 			PosInfo: varPos,
 		})
 	}
-	
+
 	return prepare
 }
 
@@ -1391,7 +1404,7 @@ func (p *Parser) parsePrimitivePrepare() *PrepareDecl {
 // Example: foreach file in prepare.files { node "copy-${file.name}" { ... } }
 func (p *Parser) parseForeachBodyDecl() *ForeachBodyDecl {
 	startPos := p.cur.Pos
-	
+
 	// Current token is 'foreach'
 	p.nextToken()
 	if p.cur.Type != IDENT {
@@ -1399,23 +1412,23 @@ func (p *Parser) parseForeachBodyDecl() *ForeachBodyDecl {
 		return nil
 	}
 	varName := p.cur.Lexeme
-	
+
 	p.nextToken()
 	if p.cur.Type != KW_IN {
 		p.addError("expected 'in' after loop variable", p.cur.Pos)
 		return nil
 	}
-	
+
 	p.nextToken()
 	rangeExpr := p.parseExpr()
-	
+
 	// expect '{'
 	p.nextToken()
 	if p.cur.Type != LBRACE {
 		p.addError("expected '{' to start foreach body", p.cur.Pos)
 		return nil
 	}
-	
+
 	var body []Decl
 	for {
 		p.nextToken()
@@ -1435,7 +1448,7 @@ func (p *Parser) parseForeachBodyDecl() *ForeachBodyDecl {
 			body = append(body, decl)
 		}
 	}
-	
+
 	return &ForeachBodyDecl{
 		VarName: varName,
 		Range:   rangeExpr,

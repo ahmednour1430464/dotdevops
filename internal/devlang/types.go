@@ -34,6 +34,9 @@ func typeCheckExpr(e Expr, lets LetEnv, path string) (Type, error) {
 	case *BoolLiteral:
 		return TypeBool, nil
 
+	case *SecretRef:
+		return TypeString, nil
+
 	case *ListLiteral:
 		if len(v.Elems) == 0 {
 			return TypeStringList, nil

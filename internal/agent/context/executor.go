@@ -124,7 +124,7 @@ func (e *Executor) validateCommand(cmd []string) error {
 	// Check denied executables (blacklist takes precedence)
 	for _, denied := range e.Context.Process.DeniedExecutables {
 		if strings.Contains(executable, denied) {
-			return fmt.Errorf("executable %q is denied by context %q", 
+			return fmt.Errorf("executable %q is denied by context %q",
 				executable, e.Context.Name)
 		}
 	}
@@ -139,7 +139,7 @@ func (e *Executor) validateCommand(cmd []string) error {
 			}
 		}
 		if !allowed {
-			return fmt.Errorf("executable %q not in allowed list for context %q", 
+			return fmt.Errorf("executable %q not in allowed list for context %q",
 				executable, e.Context.Name)
 		}
 	}

@@ -1,0 +1,20 @@
+version = "v2.0"
+
+target "local" {
+	address = "127.0.0.1:7700"
+}
+
+node "n1" {
+	type = process.exec
+	targets = [local]
+	cmd = ["echo", "n1"]
+	cwd = "."
+}
+
+node "n2" {
+	type = process.exec
+	targets = [local]
+	cmd = ["echo", "n2"]
+	cwd = "."
+	depends_on = ["n1"]
+}

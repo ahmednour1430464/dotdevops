@@ -22,6 +22,27 @@ var PrimitiveDefaults = map[string]PrimitiveContextRequirements{
 		MinimumTrustLevel:  TrustLevelLow,
 		RequiresFilesystem: true, // for cwd
 	},
+	"template.render": {
+		DefaultContextName: "safe_user_space",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"health.check": {
+		DefaultContextName: "safe_user_space",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresNetwork:    true,
+	},
+	"service.ensure": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelHigh,
+		RequiresFilesystem: true,
+	},
+	"package.install": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelHigh,
+		RequiresFilesystem: true,
+		RequiresNetwork:    true,
+	},
 	"_exec": {
 		DefaultContextName: "default",
 		MinimumTrustLevel:  TrustLevelLow,
@@ -70,13 +91,13 @@ func ResolveContext(primitive string, contexts map[string]*ExecutionContext) (*E
 
 	ctx, ok := contexts[req.DefaultContextName]
 	if !ok {
-		return nil, fmt.Errorf("required context %q not found for primitive %s", 
+		return nil, fmt.Errorf("required context %q not found for primitive %s",
 			req.DefaultContextName, primitive)
 	}
 
 	// Validate context meets minimum requirements
 	if compareTrustLevel(ctx.TrustLevel, req.MinimumTrustLevel) < 0 {
-		return nil, fmt.Errorf("context %q trust level (%s) too low for primitive %s (requires %s)", 
+		return nil, fmt.Errorf("context %q trust level (%s) too low for primitive %s (requires %s)",
 			ctx.Name, ctx.TrustLevel, primitive, req.MinimumTrustLevel)
 	}
 
@@ -90,14 +111,14 @@ func compareTrustLevel(a, b TrustLevel) int {
 		TrustLevelMedium: 2,
 		TrustLevelHigh:   3,
 	}
-	
+
 	aVal, aOk := levels[a]
 	bVal, bOk := levels[b]
-	
+
 	if !aOk || !bOk {
 		return 0 // treat unknown as equal
 	}
-	
+
 	if aVal < bVal {
 		return -1
 	} else if aVal > bVal {

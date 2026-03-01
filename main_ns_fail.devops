@@ -1,0 +1,12 @@
+version = "v2.0"
+
+import "lib.devops" as lib
+
+target "local" {
+	address = "127.0.0.1:7700"
+}
+
+node "run_lib" {
+	type = my_step
+	targets = [local]
+}

@@ -1,0 +1,37 @@
+version = "v1.2"
+
+let my_secret = secret("API_TOKEN")
+
+target "local" {
+	address = "127.0.0.1:7700"
+}
+
+node "render_config" {
+	type = template.render
+	targets = [local]
+	
+	template = "Server running on port {{.Port}} with token {{.Token}}"
+	dest = "/tmp/devops-test-phase2.txt"
+	var_Port = "8080"
+	var_Token = my_secret
+}
+
+node "check_tcp" {
+	type = health.check
+	targets = [local]
+	
+	addr = "127.0.0.1:7700"
+	timeout = "2s"
+	retries = 1
+	
+	deps = ["render_config"]
+}
+
+node "test_exec" {
+	type = _exec
+	targets = [local]
+	
+	cmd = ["cat", "/tmp/devops-test-phase2.txt"]
+	
+	deps = ["check_tcp"]
+}

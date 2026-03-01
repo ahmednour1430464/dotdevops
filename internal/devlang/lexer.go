@@ -23,8 +23,8 @@ const (
 	KW_FOR
 	KW_IN
 	KW_PARAM
-	KW_VERSION // v0.7: self-declared version directive
-	KW_FLEET   // v0.8: named group of targets by label selector
+	KW_VERSION   // v0.7: self-declared version directive
+	KW_FLEET     // v0.8: named group of targets by label selector
 	KW_PRIMITIVE // v1.2: custom primitive definition
 	KW_INPUTS
 	KW_BODY
@@ -35,6 +35,7 @@ const (
 	KW_FOREACH // v1.4: compile-time iteration over lists
 	KW_IMPORT  // v2.0: import declarations from other files
 	KW_FN      // v2.0: user-defined functions
+	KW_AS      // v2.0: namespace alias for imports
 
 	// Operators & punctuation
 	EQUAL    // =
@@ -45,13 +46,13 @@ const (
 	LPAREN   // (
 	RPAREN   // )
 	COMMA    // ,
-	PLUS      // +
-	AMPAMP    // &&
-	PIPEPIPE  // ||
-	EQEQ      // ==
-	BANGEQ    // !=
-	QUESTION  // ?
-	COLON     // :
+	PLUS     // +
+	AMPAMP   // &&
+	PIPEPIPE // ||
+	EQEQ     // ==
+	BANGEQ   // !=
+	QUESTION // ?
+	COLON    // :
 )
 
 // Token represents a single lexical token.
@@ -335,6 +336,8 @@ func (l *Lexer) readIdentOrKeyword() Token {
 		return Token{Type: KW_IMPORT, Lexeme: lexeme, Pos: startPos}
 	case "fn":
 		return Token{Type: KW_FN, Lexeme: lexeme, Pos: startPos}
+	case "as":
+		return Token{Type: KW_AS, Lexeme: lexeme, Pos: startPos}
 	case "true", "false":
 		return Token{Type: BOOL, Lexeme: lexeme, Pos: startPos}
 	}

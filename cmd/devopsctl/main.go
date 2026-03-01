@@ -2,9 +2,11 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"text/tabwriter"
@@ -43,6 +45,7 @@ func main() {
 	var applyTLSCA string
 	var applySecretProvider string
 	var applySecretFile string
+	var applyTimeout time.Duration
 
 	applyCmd := &cobra.Command{
 		Use:   "apply <plan>",
@@ -73,9 +76,7 @@ func main() {
 					return fmt.Errorf("compile .devops: %w", compErr)
 				}
 				if len(res.Errors) > 0 {
-					for _, e := range res.Errors {
-						fmt.Fprintln(os.Stderr, "  ✗", e)
-					}
+					reportErrors(res.Errors, globalOutputFormat)
 					return fmt.Errorf("compile failed")
 				}
 				p = res.Plan
@@ -87,9 +88,11 @@ func main() {
 				}
 			}
 			if errs := plan.Validate(p); len(errs) > 0 {
-				for _, e := range errs {
-					fmt.Fprintln(os.Stderr, "  ✗", e)
+				planErrors := make([]error, len(errs))
+				for i, e := range errs {
+					planErrors[i] = e
 				}
+				reportErrors(planErrors, globalOutputFormat)
 				return fmt.Errorf("plan validation failed")
 			}
 			store, err := state.Open()
@@ -110,11 +113,13 @@ func main() {
 				TLSCAPath:      applyTLSCA,
 				SecretProvider: sp,
 				OutputFormat:   globalOutputFormat,
+				Timeout:        applyTimeout,
 			})
 		},
 	}
 	applyCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show diff without applying changes")
 	applyCmd.Flags().IntVar(&parallelism, "parallelism", 10, "Max concurrent node executions")
+	applyCmd.Flags().DurationVar(&applyTimeout, "timeout", 0, "Global execution timeout (e.g., '5m', '1h')")
 	applyCmd.Flags().BoolVar(&resume, "resume", false, "Safely resume execution from the previous failure point")
 	applyCmd.Flags().StringVar(&applyLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
 	applyCmd.Flags().StringVar(&applyTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
@@ -132,6 +137,7 @@ func main() {
 	var recTLSCA string
 	var recSecretProvider string
 	var recSecretFile string
+	var recTimeout time.Duration
 
 	reconcileCmd := &cobra.Command{
 		Use:   "reconcile <plan>",
@@ -161,9 +167,7 @@ func main() {
 					return fmt.Errorf("compile .devops: %w", compErr)
 				}
 				if len(res.Errors) > 0 {
-					for _, e := range res.Errors {
-						fmt.Fprintln(os.Stderr, "  ✗", e)
-					}
+					reportErrors(res.Errors, globalOutputFormat)
 					return fmt.Errorf("compile failed")
 				}
 				p = res.Plan
@@ -175,9 +179,11 @@ func main() {
 				}
 			}
 			if errs := plan.Validate(p); len(errs) > 0 {
-				for _, e := range errs {
-					fmt.Fprintln(os.Stderr, "  ✗", e)
+				planErrors := make([]error, len(errs))
+				for i, e := range errs {
+					planErrors[i] = e
 				}
+				reportErrors(planErrors, globalOutputFormat)
 				return fmt.Errorf("plan validation failed")
 			}
 			store, err := state.Open()
@@ -198,11 +204,13 @@ func main() {
 				TLSCAPath:      recTLSCA,
 				SecretProvider: sp,
 				OutputFormat:   globalOutputFormat,
+				Timeout:        recTimeout,
 			})
 		},
 	}
 	reconcileCmd.Flags().BoolVar(&recDryRun, "dry-run", false, "Show diff without applying changes")
 	reconcileCmd.Flags().IntVar(&recParallelism, "parallelism", 10, "Max concurrent node executions")
+	reconcileCmd.Flags().DurationVar(&recTimeout, "timeout", 0, "Global execution timeout (e.g., '5m', '1h')")
 	reconcileCmd.Flags().StringVar(&recLang, "lang", "v0.3", "Language version for .devops plans (v0.1, v0.2, v0.3, v0.4, v0.5, or v0.6)")
 	reconcileCmd.Flags().StringVar(&recTLSCert, "tls-cert", "", "Path to client TLS certificate for mTLS")
 	reconcileCmd.Flags().StringVar(&recTLSKey, "tls-key", "", "Path to client TLS key for mTLS")
@@ -225,7 +233,7 @@ func main() {
 			if agentContextsPath == "" {
 				return fmt.Errorf("--contexts flag is required")
 			}
-			
+
 			if agentTLSCert == "" || agentTLSKey == "" {
 				// Always print security warning if mTLS is disabled
 				fmt.Fprintln(os.Stderr, "⚠️  SECURITY WARNING: Running agent without mTLS enabled")
@@ -244,13 +252,49 @@ func main() {
 		},
 	}
 	agentCmd.Flags().StringVar(&agentAddr, "addr", ":7700", "TCP address to listen on")
-	agentCmd.Flags().StringVar(&agentContextsPath, "contexts", "", 
+	agentCmd.Flags().StringVar(&agentContextsPath, "contexts", "",
 		"Path to execution contexts config file (REQUIRED)")
-	agentCmd.Flags().StringVar(&agentAuditLog, "audit-log", "/var/log/devopsctl-audit.log", 
+	agentCmd.Flags().StringVar(&agentAuditLog, "audit-log", "/var/log/devopsctl-audit.log",
 		"Path to audit log file")
 	agentCmd.Flags().StringVar(&agentTLSCert, "tls-cert", "", "Path to TLS certificate for agent mTLS")
 	agentCmd.Flags().StringVar(&agentTLSKey, "tls-key", "", "Path to TLS key for agent mTLS")
 	agentCmd.Flags().StringVar(&agentTLSCA, "tls-ca", "", "Path to CA certificate for agent mTLS")
+
+	agentStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Check the status of a running DevOpsCtl agent",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Basic TCP test for now. In real prod, this should use mTLS if configured.
+			conn, err := net.DialTimeout("tcp", agentAddr, 3*time.Second)
+			if err != nil {
+				return fmt.Errorf("agent unreachable at %s: %v", agentAddr, err)
+			}
+			defer conn.Close()
+
+			enc := json.NewEncoder(conn)
+			if err := enc.Encode(map[string]string{"type": "status_req"}); err != nil {
+				return fmt.Errorf("send request: %v", err)
+			}
+
+			// Read response
+			r := bufio.NewReader(conn)
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				return fmt.Errorf("read response: %v", err)
+			}
+
+			var resp map[string]any
+			if err := json.Unmarshal(line, &resp); err != nil {
+				return fmt.Errorf("parse response: %v", err)
+			}
+
+			b, _ := json.MarshalIndent(resp, "", "  ")
+			fmt.Println(string(b))
+			return nil
+		},
+	}
+	agentStatusCmd.Flags().StringVar(&agentAddr, "addr", ":7700", "TCP address of the agent")
+	agentCmd.AddCommand(agentStatusCmd)
 
 	// ── devopsctl state list ──────────────────────────────────────────────────
 	var stateNode string
@@ -367,9 +411,7 @@ func main() {
 						return nil, err
 					}
 					if len(res.Errors) > 0 {
-						for _, e := range res.Errors {
-							fmt.Fprintln(os.Stderr, "  ✗", e)
-						}
+						reportErrors(res.Errors, globalOutputFormat)
 						return nil, fmt.Errorf("compile failed for %s", p)
 					}
 					return res.Plan, nil
@@ -442,10 +484,10 @@ func main() {
 			defer store.Close()
 
 			return controller.RollbackLast(store, controller.RunOptions{
-				Confirm:     rollbackConfirm,
-				TLSCertPath: rollbackTLSCert,
-				TLSKeyPath:  rollbackTLSKey,
-				TLSCAPath:   rollbackTLSCA,
+				Confirm:      rollbackConfirm,
+				TLSCertPath:  rollbackTLSCert,
+				TLSKeyPath:   rollbackTLSKey,
+				TLSCAPath:    rollbackTLSCA,
 				OutputFormat: globalOutputFormat,
 			})
 		},
@@ -462,6 +504,7 @@ func main() {
 	var obsTLSCert string
 	var obsTLSKey string
 	var obsTLSCA string
+	var obsTimeout time.Duration
 
 	observeCmd := &cobra.Command{
 		Use:   "observe <plan>",
@@ -483,9 +526,7 @@ func main() {
 					return err
 				}
 				if len(res.Errors) > 0 {
-					for _, e := range res.Errors {
-						fmt.Fprintln(os.Stderr, "  ✗", e)
-					}
+					reportErrors(res.Errors, globalOutputFormat)
 					return fmt.Errorf("compile failed")
 				}
 				p = res.Plan
@@ -497,6 +538,14 @@ func main() {
 					return err
 				}
 			}
+			if errs := plan.Validate(p); len(errs) > 0 {
+				planErrors := make([]error, len(errs))
+				for i, e := range errs {
+					planErrors[i] = e
+				}
+				reportErrors(planErrors, globalOutputFormat)
+				return fmt.Errorf("plan validation failed")
+			}
 			store, err := state.Open()
 			if err != nil {
 				return err
@@ -504,16 +553,18 @@ func main() {
 			defer store.Close()
 
 			return controller.Run(p, rawPlan, store, controller.RunOptions{
-				Parallelism: obsParallelism,
-				Observe:     true,
+				Parallelism:  obsParallelism,
+				Observe:      true,
 				TLSCertPath:  obsTLSCert,
 				TLSKeyPath:   obsTLSKey,
 				TLSCAPath:    obsTLSCA,
 				OutputFormat: globalOutputFormat,
+				Timeout:      obsTimeout,
 			})
 		},
 	}
 	observeCmd.Flags().IntVar(&obsParallelism, "parallelism", 10, "Max concurrent observations")
+	observeCmd.Flags().DurationVar(&obsTimeout, "timeout", 0, "Global execution timeout (e.g., '5m', '1h')")
 	observeCmd.Flags().StringVar(&obsLang, "lang", "v0.3", "Language version (deprecated, use 'version' directive)")
 	observeCmd.Flags().StringVar(&obsTLSCert, "tls-cert", "", "Path to client TLS certificate")
 	observeCmd.Flags().StringVar(&obsTLSKey, "tls-key", "", "Path to client TLS key")
@@ -548,6 +599,13 @@ For production, use certificates from an external CA.`,
 			if err != nil {
 				return fmt.Errorf("pki init: %w", err)
 			}
+
+			if globalOutputFormat == "json" {
+				b, _ := json.MarshalIndent(bundle, "", "  ")
+				fmt.Println(string(b))
+				return nil
+			}
+
 			fmt.Println("✓ PKI initialised successfully")
 			fmt.Println()
 			fmt.Printf("  CA certificate : %s\n", bundle.CACert)
@@ -604,9 +662,7 @@ For production, use certificates from an external CA.`,
 						return nil, err
 					}
 					if len(res.Errors) > 0 {
-						for _, e := range res.Errors {
-							fmt.Fprintln(os.Stderr, "  ✗", e)
-						}
+						reportErrors(res.Errors, globalOutputFormat)
 						return nil, fmt.Errorf("compile failed for %s", p)
 					}
 					return res.Plan, nil
@@ -677,9 +733,7 @@ For production, use certificates from an external CA.`,
 					return fmt.Errorf("compile: %w", err)
 				}
 				if len(res.Errors) > 0 {
-					for _, e := range res.Errors {
-						fmt.Fprintln(os.Stderr, "  ✗", e)
-					}
+					reportErrors(res.Errors, globalOutputFormat)
 					return fmt.Errorf("%d error(s) found", len(res.Errors))
 				}
 				if globalOutputFormat == "json" {
@@ -697,9 +751,11 @@ For production, use certificates from an external CA.`,
 				return fmt.Errorf("load plan: %w", err)
 			}
 			if errs := plan.Validate(p); len(errs) > 0 {
-				for _, e := range errs {
-					fmt.Fprintln(os.Stderr, "  ✗", e)
+				planErrors := make([]error, len(errs))
+				for i, e := range errs {
+					planErrors[i] = e
 				}
+				reportErrors(planErrors, globalOutputFormat)
 				return fmt.Errorf("%d error(s) found", len(errs))
 			}
 			if globalOutputFormat == "json" {
@@ -714,10 +770,120 @@ For production, use certificates from an external CA.`,
 	}
 	validateCmd.Flags().StringVar(&validateLang, "lang", "v0.8", "Default language version for .devops files without version directive")
 
-	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd, pkiCmd, lspCmd, diffCmd, validateCmd)
+	// ── devopsctl init ────────────────────────────────────────────────────────
+	var initDir string
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Scaffold a new DevOpsCTL project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := os.MkdirAll(initDir, 0755); err != nil {
+				return err
+			}
 
+			fmt.Println("Initializing project in", initDir, "...")
+
+			// 1. Write starter plan.devops
+			planPath := filepath.Join(initDir, "plan.devops")
+			if _, err := os.Stat(planPath); os.IsNotExist(err) {
+				planContent := `version = "v1.2"
+
+target "local" {
+	address = "127.0.0.1:7700"
+}
+
+node "hello" {
+	type = process.exec
+	targets = [local]
+	
+	cmd = ["echo", "Hello, DevOpsCTL!"]
+}
+`
+				if err := os.WriteFile(planPath, []byte(planContent), 0644); err != nil {
+					return err
+				}
+				fmt.Println("  Created", planPath)
+			}
+
+			// 2. PKI
+			pkiDir := filepath.Join(initDir, "pki")
+			if _, err := os.Stat(pkiDir); os.IsNotExist(err) {
+				if err := os.MkdirAll(pkiDir, 0700); err != nil {
+					return err
+				}
+				opts := pki.InitOptions{
+					OutputDir: pkiDir,
+					ValidFor:  10 * 365 * 24 * time.Hour,
+				}
+				_, err := pki.Init(opts)
+				if err != nil {
+					return err
+				}
+				fmt.Println("  Created PKI certificates in", pkiDir)
+			}
+
+			// 3. contexts.yaml
+			ctxPath := filepath.Join(initDir, "contexts.yaml")
+			if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
+				ctxContent := `contexts:
+  - name: default
+    purpose: Development context
+    trust_level: high
+    identity:
+      user: $USER
+      group: $USER
+    privilege:
+      allow_escalation: true
+    filesystem:
+      readable_paths: ["/"]
+      writable_paths: ["/tmp", "/var/tmp", "."]
+    process:
+      denied_executables: []
+      resource_limits:
+        max_processes: 100
+    network:
+      allow_network: true
+      scope: full
+    audit:
+      level: standard
+      log_stdout: true
+      log_stderr: true
+`
+				if err := os.WriteFile(ctxPath, []byte(ctxContent), 0644); err != nil {
+					return err
+				}
+				fmt.Println("  Created", ctxPath)
+			}
+
+			fmt.Println("\n✓ Project initialized successfully!")
+			fmt.Println("\nNext steps:")
+			fmt.Println("  1. Start the local agent:")
+			fmt.Println("     ./devopsctl agent --addr :7700 --contexts contexts.yaml --tls-cert pki/agent.crt --tls-key pki/agent.key --tls-ca pki/ca.crt")
+			fmt.Println("  2. Apply the plan:")
+			fmt.Println("     ./devopsctl apply plan.devops --tls-cert pki/controller.crt --tls-key pki/controller.key --tls-ca pki/ca.crt")
+			
+			return nil
+		},
+	}
+	initCmd.Flags().StringVar(&initDir, "dir", ".", "Directory to scaffold the project into")
+
+	root.AddCommand(applyCmd, reconcileCmd, agentCmd, stateCmd, planCmd, rollbackCmd, observeCmd, pkiCmd, lspCmd, diffCmd, validateCmd, initCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+func reportErrors(errs []error, format string) {
+	if format == "json" {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		b, _ := json.MarshalIndent(map[string]any{"errors": msgs}, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "  ✗", e)
+		}
 	}
 }

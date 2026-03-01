@@ -251,8 +251,8 @@ func LowerToPlanV0_4(file *File, lets LetEnv, steps map[string]*StepDecl) (*plan
 			effectiveNode = &NodeDecl{
 				Name:          nodeDecl.Name, // Use node's ID, not step's
 				Type:          stepDecl.Body.Type,
-				Targets:       nodeDecl.Targets,       // From node
-				DependsOn:     nodeDecl.DependsOn,     // From node
+				Targets:       nodeDecl.Targets,            // From node
+				DependsOn:     nodeDecl.DependsOn,          // From node
 				FailurePolicy: stepDecl.Body.FailurePolicy, // From step (can be overridden)
 				Inputs:        make(map[string]Expr),
 				PosInfo:       nodeDecl.PosInfo,
@@ -443,9 +443,9 @@ func expandNodeWithSteps(nodeDecl *NodeDecl, steps map[string]*StepDecl, primiti
 
 	// Merge node with expanded step
 	effectiveNode := deepCloneNode(expandedStep)
-	effectiveNode.Name = nodeDecl.Name            // Use node's ID
-	effectiveNode.Targets = nodeDecl.Targets      // From node
-	effectiveNode.DependsOn = nodeDecl.DependsOn  // From node
+	effectiveNode.Name = nodeDecl.Name           // Use node's ID
+	effectiveNode.Targets = nodeDecl.Targets     // From node
+	effectiveNode.DependsOn = nodeDecl.DependsOn // From node
 
 	// Merge inputs: node overrides step
 	for key, expr := range nodeDecl.Inputs {
@@ -652,7 +652,6 @@ func lowerNodeToPlan(node *NodeDecl, lets LetEnv) (plan.Node, error) {
 	return n, nil
 }
 
-
 // LowerToPlanV0_6 converts a validated AST with steps, parameters, and for-loops into a plan.Plan IR.
 // Parameters are substituted during step expansion (v0.6 new feature).
 func LowerToPlanV0_6(file *File, lets LetEnv, steps map[string]*StepDecl, forLoops []*ForDecl) (*plan.Plan, error) {
@@ -800,9 +799,9 @@ func expandNodeWithStepsV0_6(nodeDecl *NodeDecl, steps map[string]*StepDecl, pri
 
 	// Merge node with expanded step
 	effectiveNode := deepCloneNode(expandedStep)
-	effectiveNode.Name = nodeDecl.Name            // Use node's ID
-	effectiveNode.Targets = nodeDecl.Targets      // From node
-	effectiveNode.DependsOn = nodeDecl.DependsOn  // From node
+	effectiveNode.Name = nodeDecl.Name           // Use node's ID
+	effectiveNode.Targets = nodeDecl.Targets     // From node
+	effectiveNode.DependsOn = nodeDecl.DependsOn // From node
 
 	// Merge inputs: node overrides step (non-parameter inputs)
 	for key, expr := range nodeDecl.Inputs {
@@ -935,7 +934,7 @@ func LowerToPlanV0_8(file *File, lets LetEnv, steps map[string]*StepDecl, forLoo
 	if err != nil {
 		return nil, err
 	}
-	
+
 	p.Version = "1.0"
 
 	// Gather Targets with v0.8 Labels support.
@@ -946,7 +945,7 @@ func LowerToPlanV0_8(file *File, lets LetEnv, steps map[string]*StepDecl, forLoo
 			targetLabels[t.Name] = t.Labels
 		}
 	}
-	
+
 	// Update target labels in plan
 	for i := range p.Targets {
 		p.Targets[i].Labels = targetLabels[p.Targets[i].ID]
@@ -1032,7 +1031,7 @@ func LowerToPlanV0_8(file *File, lets LetEnv, steps map[string]*StepDecl, forLoo
 
 		finalNodes = append(finalNodes, n)
 	}
-	
+
 	p.Nodes = finalNodes
 
 	return p, nil
@@ -1122,7 +1121,7 @@ func expandPrimitiveNode(nodeDecl *NodeDecl, inst plan.Node, prim *PrimitiveDecl
 	for key, expr := range expandedNodeDecl.Inputs {
 		expandedNodeDecl.Inputs[key] = substituteInputsInExpr(expr, inputEnv)
 	}
-	
+
 	// Map back to plan.Node
 	n, err := lowerNodeToPlan(expandedNodeDecl, lets)
 	if err != nil {
@@ -1131,7 +1130,7 @@ func expandPrimitiveNode(nodeDecl *NodeDecl, inst plan.Node, prim *PrimitiveDecl
 
 	// Fix identifiers: n.ID should be unique. Prefix with parent ID.
 	n.ID = inst.ID + "." + n.ID
-	
+
 	// Fix depends_on: also prefix internal dependencies
 	// Collect all internal node names for this primitive
 	internalNodes := make(map[string]bool)
@@ -1150,12 +1149,12 @@ func expandPrimitiveNode(nodeDecl *NodeDecl, inst plan.Node, prim *PrimitiveDecl
 		}
 	}
 	n.DependsOn = newDependsOn
-	
+
 	// Inherit targets if the expanded node doesn't specify them
 	if len(n.Targets) == 0 {
 		n.Targets = inst.Targets
 	}
-	
+
 	// Add metadata about source
 	if n.Inputs == nil {
 		n.Inputs = make(map[string]any)
