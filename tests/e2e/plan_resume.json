@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "targets": [
+    { "id": "local", "address": "127.0.0.1:7700" }
+  ],
+  "nodes": [
+    {
+      "id": "node_a",
+      "type": "process.exec",
+      "targets": ["local"],
+      "inputs": { "cmd": ["echo", "Node A Reconciled"], "cwd": "/tmp" }
+    },
+    {
+      "id": "node_b",
+      "type": "process.exec",
+      "targets": ["local"],
+      "inputs": { "cmd": ["echo", "Node B"], "cwd": "/tmp" },
+      "depends_on": ["node_a"]
+    },
+    {
+      "id": "node_c",
+      "type": "process.exec",
+      "targets": ["local"],
+      "inputs": { "cmd": ["sh", "-c", "if [ -f /tmp/fail_c ]; then echo 'Fails'; exit 1; else echo 'Succeeds'; fi"], "cwd": "/tmp" },
+      "depends_on": ["node_b"]
+    },
+    {
+      "id": "node_d",
+      "type": "process.exec",
+      "targets": ["local"],
+      "inputs": { "cmd": ["echo", "Node D"], "cwd": "/tmp" },
+      "depends_on": ["node_c"]
+    }
+  ]
+}

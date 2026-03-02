@@ -3,6 +3,6 @@
 *.out
 *.pid
 *.pp
-*.json
+/*.json
 devopsctl
 .qoder/
