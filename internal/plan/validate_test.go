@@ -71,7 +71,7 @@ func TestValidateProcessExecEmptyCmd(t *testing.T) {
 	}
 }
 
-func TestValidateProcessExecMissingCwd(t *testing.T) {
+func TestValidateProcessExecOmitCwdIsValid(t *testing.T) {
 	p := &plan.Plan{
 		Version: "1.0",
 		Targets: []plan.Target{{ID: "t1", Address: "1.2.3.4:7700"}},
@@ -85,10 +85,30 @@ func TestValidateProcessExecMissingCwd(t *testing.T) {
 		}},
 	}
 	errs := plan.Validate(p)
-	if len(errs) == 0 {
-		t.Fatal("expected error for missing cwd in process.exec")
+	if len(errs) != 0 {
+		t.Fatalf("expected cwd to be optional, got errors: %v", errs)
 	}
-	if !strings.Contains(errs[0].Error(), "requires string 'cwd'") {
+}
+
+func TestValidateProcessExecCwdWrongType(t *testing.T) {
+	p := &plan.Plan{
+		Version: "1.0",
+		Targets: []plan.Target{{ID: "t1", Address: "1.2.3.4:7700"}},
+		Nodes: []plan.Node{{
+			ID:      "n1",
+			Type:    "process.exec",
+			Targets: []string{"t1"},
+			Inputs: map[string]any{
+				"cmd": []any{"echo", "hello"},
+				"cwd": 42,
+			},
+		}},
+	}
+	errs := plan.Validate(p)
+	if len(errs) == 0 {
+		t.Fatal("expected error when cwd is not a string")
+	}
+	if !strings.Contains(errs[0].Error(), "'cwd' must be a string") {
 		t.Errorf("unexpected error message: %v", errs[0])
 	}
 }

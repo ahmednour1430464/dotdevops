@@ -367,19 +367,14 @@ func validatePrimitiveInputsV0_1(path string, node *NodeDecl, errs *[]error) {
 			})
 		}
 
-		cwdExpr, ok := node.Inputs["cwd"]
-		if !ok {
-			*errs = append(*errs, &SemanticError{
-				Path: path,
-				Pos:  node.Pos(),
-				Msg:  "process.exec requires attribute cwd",
-			})
-		} else if _, ok := cwdExpr.(*StringLiteral); !ok {
-			*errs = append(*errs, &SemanticError{
-				Path: path,
-				Pos:  cwdExpr.Pos(),
-				Msg:  "process.exec cwd must be a string literal",
-			})
+		if cwdExpr, ok := node.Inputs["cwd"]; ok {
+			if _, ok := cwdExpr.(*StringLiteral); !ok {
+				*errs = append(*errs, &SemanticError{
+					Path: path,
+					Pos:  cwdExpr.Pos(),
+					Msg:  "process.exec cwd must be a string literal",
+				})
+			}
 		}
 	}
 }

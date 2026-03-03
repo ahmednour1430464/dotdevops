@@ -75,9 +75,10 @@ func Validate(p *Plan) []error {
 			if !cmdOk || len(cmd) == 0 {
 				errs = append(errs, fmt.Errorf("nodes[%d] (%s): process.exec requires non-empty array 'cmd'", i, n.ID))
 			}
-			_, cwdOk := n.Inputs["cwd"].(string)
-			if !cwdOk {
-				errs = append(errs, fmt.Errorf("nodes[%d] (%s): process.exec requires string 'cwd'", i, n.ID))
+			if cwd, cwdExists := n.Inputs["cwd"]; cwdExists {
+				if _, cwdOk := cwd.(string); !cwdOk {
+					errs = append(errs, fmt.Errorf("nodes[%d] (%s): process.exec 'cwd' must be a string", i, n.ID))
+				}
 			}
 		case "_fs.write", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat", "_exec":
 			// Atomic built-ins: detailed input validation is handled by the agent context enforcement.

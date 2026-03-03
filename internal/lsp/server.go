@@ -61,6 +61,9 @@ var documentCache = map[string]string{}
 
 func Serve() error {
 	r := bufio.NewReader(os.Stdin)
+	w := bufio.NewWriter(os.Stdout)
+	defer w.Flush()
+	
 	for {
 		msg, err := readMessage(r)
 		if err == io.EOF {
@@ -75,7 +78,8 @@ func Serve() error {
 			continue
 		}
 
-		handleRequest(req)
+		handleRequest(req, w)
+		w.Flush()
 	}
 }
 
@@ -100,7 +104,7 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 	return body, err
 }
 
-func handleRequest(req Request) {
+func handleRequest(req Request, w *bufio.Writer) {
 	switch req.Method {
 	case "initialize":
 		resp := Response{
@@ -116,7 +120,10 @@ func handleRequest(req Request) {
 				},
 			},
 		}
-		send(resp)
+		send(resp, w)
+	case "initialized":
+		// Client sends this after receiving initialize response
+		// No response needed for notification
 	case "textDocument/completion":
 		var params CompletionParams
 		json.Unmarshal(req.Params, &params)
@@ -137,7 +144,7 @@ func handleRequest(req Request) {
 			ID:      req.ID,
 			Result:  items,
 		}
-		send(resp)
+		send(resp, w)
 	case "textDocument/didOpen":
 		var params struct {
 			TextDocument struct {
@@ -148,7 +155,7 @@ func handleRequest(req Request) {
 		json.Unmarshal(req.Params, &params)
 		if params.TextDocument.URI != "" {
 			documentCache[params.TextDocument.URI] = params.TextDocument.Text
-			runDiagnostics(params.TextDocument.URI, params.TextDocument.Text)
+			runDiagnostics(params.TextDocument.URI, params.TextDocument.Text, w)
 		}
 	case "textDocument/didChange":
 		var params struct {
@@ -163,7 +170,7 @@ func handleRequest(req Request) {
 		if len(params.ContentChanges) > 0 {
 			text := params.ContentChanges[len(params.ContentChanges)-1].Text
 			documentCache[params.TextDocument.URI] = text
-			runDiagnostics(params.TextDocument.URI, text)
+			runDiagnostics(params.TextDocument.URI, text, w)
 		}
 	case "textDocument/didSave":
 		var params struct {
@@ -174,7 +181,7 @@ func handleRequest(req Request) {
 		json.Unmarshal(req.Params, &params)
 		// Re-run diagnostics on save using cached content.
 		if text, ok := documentCache[params.TextDocument.URI]; ok {
-			runDiagnostics(params.TextDocument.URI, text)
+			runDiagnostics(params.TextDocument.URI, text, w)
 		}
 	case "textDocument/didClose":
 		var params struct {
@@ -187,7 +194,7 @@ func handleRequest(req Request) {
 	}
 }
 
-func runDiagnostics(uri, text string) {
+func runDiagnostics(uri, text string, w *bufio.Writer) {
 	path := strings.TrimPrefix(uri, "file://")
 
 	res, _ := devlang.CompileFileAutoDetect(path, []byte(text), "v0.8")
@@ -198,7 +205,7 @@ func runDiagnostics(uri, text string) {
 		col := 0
 		msg := err.Error()
 
-		// Prefer structured position from SemanticError (avoids fragile string parsing).
+		// Use structured position from typed compiler errors (avoids fragile string parsing).
 		if se, ok := err.(*devlang.SemanticError); ok {
 			line = se.Pos.Line - 1 // LSP is 0-based
 			if line < 0 {
@@ -206,8 +213,24 @@ func runDiagnostics(uri, text string) {
 			}
 			col = se.Pos.Col
 			msg = se.Msg
+		} else if pe, ok := err.(*devlang.ParseError); ok {
+			// ParseError is produced by the parser — use its structured position.
+			line = pe.Pos.Line - 1 // LSP is 0-based
+			if line < 0 {
+				line = 0
+			}
+			col = pe.Pos.Col
+			msg = pe.Msg
+		} else if ce, ok := err.(*devlang.CompileError); ok {
+			// CompileError fallback — use its structured position.
+			line = ce.Line - 1 // LSP is 0-based
+			if line < 0 {
+				line = 0
+			}
+			col = ce.Col
+			msg = ce.Message
 		} else {
-			// Fallback: attempt to parse "file:line:col: message" from error string.
+			// Last-resort fallback: attempt to parse "file:line:col: message" from error string.
 			fmt.Sscanf(msg, "%*s:%d:%d:", &line, &col)
 			if line > 0 {
 				line-- // LSP is 0-based
@@ -233,10 +256,10 @@ func runDiagnostics(uri, text string) {
 			Diagnostics: diagnostics,
 		},
 	}
-	send(notif)
+	send(notif, w)
 }
 
-func send(v any) {
+func send(v any, w *bufio.Writer) {
 	msg, _ := json.Marshal(v)
-	fmt.Printf("Content-Length: %d\r\n\r\n%s", len(msg), msg)
+	fmt.Fprintf(w, "Content-Length: %d\r\n\r\n%s", len(msg), msg)
 }
