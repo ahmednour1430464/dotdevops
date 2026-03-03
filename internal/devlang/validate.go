@@ -413,6 +413,84 @@ type CompileResult struct {
 }
 
 // ExtractVersion returns the self-declared language version from the file, or "" if not found.
+// versionRank maps version strings to a comparable integer for ordering.
+var versionRank = map[string]int{
+	"v0.1": 1, "v0.2": 2, "v0.3": 3, "v0.4": 4, "v0.5": 5,
+	"v0.6": 6, "v0.7": 7, "v0.8": 8, "v0.9": 9,
+	"v1.2": 12, "v1.3": 13, "v1.4": 14,
+	"v2.0": 20,
+}
+
+// checkVersionMismatch scans top-level declarations for features that require a
+// higher language version than effectiveVersion. versionDeclared indicates whether
+// the file explicitly declared a version (vs. falling back to the default).
+// Returns SemanticErrors with exact positions pointing at the offending declaration.
+func checkVersionMismatch(file *File, effectiveVersion string, versionDeclared bool) []error {
+	current := versionRank[effectiveVersion]
+
+	hint := func(required string) string {
+		if !versionDeclared {
+			return fmt.Sprintf("add 'version = %q' as the first line of the file", required)
+		}
+		return fmt.Sprintf("upgrade the version declaration to %q", required)
+	}
+
+	var errs []error
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ImportDecl:
+			if current < versionRank["v2.0"] {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("'import' requires version v2.0 or later; %s", hint("v2.0")),
+				})
+			}
+		case *FnDecl:
+			if current < versionRank["v2.0"] {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("'fn' declarations require version v2.0 or later; %s", hint("v2.0")),
+				})
+			}
+		case *PrimitiveDecl:
+			if current < versionRank["v1.2"] {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("'primitive' declarations require version v1.2 or later; %s", hint("v1.2")),
+				})
+			}
+		case *FleetDecl:
+			if current < versionRank["v0.8"] {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("'fleet' declarations require version v0.8 or later; %s", hint("v0.8")),
+				})
+			}
+		case *StepDecl:
+			if current < versionRank["v0.4"] {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("'step' declarations require version v0.4 or later; %s", hint("v0.4")),
+				})
+			}
+		case *ForDecl:
+			if current < versionRank["v0.5"] {
+				errs = append(errs, &SemanticError{
+					Path: file.Path,
+					Pos:  d.Pos(),
+					Msg:  fmt.Sprintf("'for' loops require version v0.5 or later; %s", hint("v0.5")),
+				})
+			}
+		}
+	}
+	return errs
+}
+
 func ExtractVersion(file *File) string {
 	if len(file.Decls) > 0 {
 		if v, ok := file.Decls[0].(*VersionDecl); ok {
@@ -429,9 +507,18 @@ func CompileFileAutoDetect(path string, src []byte, defaultVersion string) (*Com
 		return &CompileResult{Errors: errs}, nil
 	}
 
-	version := ExtractVersion(file)
+	declaredVersion := ExtractVersion(file)
+	versionDeclared := declaredVersion != ""
+	version := declaredVersion
 	if version == "" {
 		version = defaultVersion
+	}
+
+	// Check for version-feature mismatches before dispatching. This catches
+	// cases like using 'import' without declaring version = "v2.0", producing
+	// a clear, actionable error instead of confusing downstream failures.
+	if mismatchErrs := checkVersionMismatch(file, version, versionDeclared); len(mismatchErrs) > 0 {
+		return &CompileResult{Errors: mismatchErrs}, nil
 	}
 
 	switch version {
