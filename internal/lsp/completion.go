@@ -39,12 +39,6 @@ var primitiveTypes = []string{
 	"file.sync", "process.exec",
 }
 
-// Node field keywords.
-var nodeFields = []string{
-	"type", "targets", "depends_on", "failure_policy",
-	"idempotent", "side_effects", "retry", "rollback_cmd",
-}
-
 // GetCompletions returns completion items based on the cursor context.
 func GetCompletions(text string, line, character int) []CompletionItem {
 	var items []CompletionItem
@@ -56,19 +50,46 @@ func GetCompletions(text string, line, character int) []CompletionItem {
 	case contextTopLevel:
 		// Suggest top-level declarations
 		items = append(items, keywordCompletions([]string{
-			"version", "target", "node", "let", "for", "step", "fleet", "import", "fn",
+			"version", "target", "node", "let", "for", "step", "fleet", "import", "fn", "primitive",
 		})...)
+
+	case contextTargetBody:
+		// Inside target "name" { ... } - show target-specific fields
+		items = append(items, constructFieldCompletions("target")...)
+
+	case contextFleetBody:
+		// Inside fleet "name" { ... } - show fleet-specific fields
+		items = append(items, constructFieldCompletions("fleet")...)
 
 	case contextNodeType:
 		// Suggest primitive types after 'type ='
 		items = append(items, primitiveTypeCompletions()...)
 
 	case contextNodeBody:
-		// Suggest node fields and primitive inputs
-		items = append(items, nodeFieldCompletions()...)
+		// Inside node "name" { ... } - show node-specific fields + primitive inputs
+		items = append(items, constructFieldCompletions("node")...)
 		if context.primitiveType != "" {
 			items = append(items, primitiveInputCompletions(context.primitiveType)...)
 		}
+
+	case contextStepBody:
+		// Inside step "name" { ... } - show step-specific fields
+		items = append(items, constructFieldCompletions("step")...)
+		if context.primitiveType != "" {
+			items = append(items, primitiveInputCompletions(context.primitiveType)...)
+		}
+
+	case contextPrimitiveBody:
+		// Inside primitive "name" { ... } - show primitive blocks
+		items = append(items, constructFieldCompletions("primitive")...)
+
+	case contextContractBody:
+		// Inside contract { ... } - show contract fields
+		items = append(items, constructFieldCompletions("contract")...)
+
+	case contextRetryBody:
+		// Inside retry { ... } - show retry fields
+		items = append(items, constructFieldCompletions("retry")...)
 
 	case contextTargetRef:
 		// Would need to analyze file for defined targets
@@ -92,10 +113,15 @@ type contextKind int
 const (
 	contextUnknown contextKind = iota
 	contextTopLevel
-	contextNodeType
-	contextNodeBody
-	contextTargetRef
-	contextStepBody
+	contextTargetBody    // inside target "name" { }
+	contextFleetBody     // inside fleet "name" { }
+	contextNodeType      // after type =
+	contextNodeBody      // inside node "name" { }
+	contextStepBody      // inside step "name" { }
+	contextPrimitiveBody // inside primitive "name" { }
+	contextContractBody  // inside contract { }
+	contextRetryBody     // inside retry { }
+	contextTargetRef     // inside targets = []
 )
 
 type completionContext struct {
@@ -124,47 +150,10 @@ func analyzeContext(text string, line, character int) completionContext {
 		return completionContext{kind: contextNodeType}
 	}
 
-	// Check if we're in a node body
-	// Look backwards for 'node' or 'step' opening
-	inNode := false
-	primitiveType := ""
-	braceDepth := 0
-	for i := line; i >= 0; i-- {
-		l := lines[i]
-		if i == line {
-			l = beforeCursor
-		}
-		for j := len(l) - 1; j >= 0; j-- {
-			ch := l[j]
-			if ch == '}' {
-				braceDepth++
-			} else if ch == '{' {
-				braceDepth--
-				if braceDepth < 0 {
-					// Found opening brace
-					// Check if it's preceded by 'node' or 'step'
-					lineContent := strings.TrimSpace(l[:j])
-					if strings.HasPrefix(lineContent, "node ") || strings.HasPrefix(lineContent, "step ") {
-						inNode = true
-						break
-					}
-				}
-			}
-		}
-		if inNode {
-			break
-		}
-		// Also scan for 'type = xxx'
-		if idx := strings.Index(l, "type ="); idx >= 0 {
-			rest := strings.TrimSpace(l[idx+6:])
-			if rest != "" {
-				primitiveType = strings.Split(rest, " ")[0]
-			}
-		}
-	}
-
-	if inNode {
-		return completionContext{kind: contextNodeBody, primitiveType: primitiveType}
+	// Look backwards to find which block we're inside
+	result := findInnermostBlock(lines, line, beforeCursor)
+	if result.kind != contextUnknown {
+		return result
 	}
 
 	// Check if we're inside 'targets = ['
@@ -174,6 +163,103 @@ func analyzeContext(text string, line, character int) completionContext {
 
 	// Default to top level
 	return completionContext{kind: contextTopLevel}
+}
+
+// findInnermostBlock traverses backwards from the current position to find the innermost block context.
+func findInnermostBlock(lines []string, currentLineIdx int, beforeCursor string) completionContext {
+	braceStack := []blockInfo{}
+	primitiveType := ""
+
+	// Process lines from current line going backwards
+	for i := currentLineIdx; i >= 0; i-- {
+		line := lines[i]
+		if i == currentLineIdx {
+			line = beforeCursor
+		}
+
+		// Process characters from right to left
+		for j := len(line) - 1; j >= 0; j-- {
+			ch := line[j]
+			if ch == '}' {
+				// Closing brace - push to stack
+				braceStack = append(braceStack, blockInfo{lineNum: i, isOpening: false})
+			} else if ch == '{' {
+				// Opening brace - check if we have a matching closing brace
+				if len(braceStack) > 0 && !braceStack[len(braceStack)-1].isOpening {
+					// Pop the matching closing brace
+					braceStack = braceStack[:len(braceStack)-1]
+				} else {
+					// This opening brace is unmatched - we're inside this block
+					blockType := identifyBlockType(line[:j])
+					return completionContext{kind: blockType, primitiveType: primitiveType}
+				}
+			}
+		}
+
+		// Also scan for 'type = xxx' to capture primitive type
+		if idx := strings.Index(line, "type ="); idx >= 0 {
+			rest := strings.TrimSpace(line[idx+6:])
+			if rest != "" {
+				// Extract just the primitive type name
+				words := strings.Fields(rest)
+				if len(words) > 0 {
+					primitiveType = words[0]
+				}
+			}
+		}
+	}
+
+	return completionContext{kind: contextUnknown}
+}
+
+type blockInfo struct {
+	lineNum  int
+	isOpening bool
+}
+
+// identifyBlockType determines what kind of block precedes an opening brace.
+func identifyBlockType(beforeBrace string) contextKind {
+	trimmed := strings.TrimSpace(beforeBrace)
+
+	// Check for specific block types by looking at keywords before the brace
+	// Order matters - check more specific patterns first
+
+	// Check for retry { }
+	if trimmed == "retry" || strings.HasSuffix(trimmed, "retry") {
+		return contextRetryBody
+	}
+
+	// Check for contract { }
+	if trimmed == "contract" || strings.HasSuffix(trimmed, "contract") {
+		return contextContractBody
+	}
+
+	// Check for target "name" { }
+	if strings.HasPrefix(trimmed, "target ") {
+		return contextTargetBody
+	}
+
+	// Check for fleet "name" { }
+	if strings.HasPrefix(trimmed, "fleet ") {
+		return contextFleetBody
+	}
+
+	// Check for node "name" { }
+	if strings.HasPrefix(trimmed, "node ") {
+		return contextNodeBody
+	}
+
+	// Check for step "name" { }
+	if strings.HasPrefix(trimmed, "step ") {
+		return contextStepBody
+	}
+
+	// Check for primitive "name" { }
+	if strings.HasPrefix(trimmed, "primitive ") {
+		return contextPrimitiveBody
+	}
+
+	return contextUnknown
 }
 
 func keywordCompletions(kws []string) []CompletionItem {
@@ -201,14 +287,25 @@ func primitiveTypeCompletions() []CompletionItem {
 	return items
 }
 
-func nodeFieldCompletions() []CompletionItem {
-	items := make([]CompletionItem, len(nodeFields))
-	for i, field := range nodeFields {
-		items[i] = CompletionItem{
-			Label:  field,
-			Kind:   6, // Variable
-			Detail: "node field",
+// constructFieldCompletions returns completion items for fields of a language construct.
+func constructFieldCompletions(constructType string) []CompletionItem {
+	schema := GetConstructSchema(constructType)
+	if schema == nil {
+		return nil
+	}
+
+	items := make([]CompletionItem, 0, len(schema.Fields))
+	for name, field := range schema.Fields {
+		required := ""
+		if field.Required {
+			required = " (required)"
 		}
+		items = append(items, CompletionItem{
+			Label:         name,
+			Kind:          6, // Variable
+			Detail:        field.Type + required,
+			Documentation: field.Description,
+		})
 	}
 	return items
 }
