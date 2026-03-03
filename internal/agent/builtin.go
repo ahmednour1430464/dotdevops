@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"strconv"
 	"syscall"
@@ -286,5 +287,101 @@ func handleFSStat(executor *agentcontext.Executor, inputs map[string]any) proto.
 		Status:       "success",
 		Stdout:       string(resultJSON),
 		RollbackSafe: true, // Read-only operation
+	}
+}
+
+// handleFSRead performs the read-only _fs.read operation.
+// Returns file content as a string (limited to 1MB for safety).
+func handleFSRead(executor *agentcontext.Executor, inputs map[string]any) proto.Result {
+	path, _ := inputs["path"].(string)
+
+	if path == "" {
+		return proto.Result{Status: "failed", Stderr: "missing 'path'"}
+	}
+
+	if err := executor.ValidateFilePath(path, agentcontext.FileOpRead); err != nil {
+		return proto.Result{Status: "failed", Class: "context_enforcement_error", Stderr: err.Error()}
+	}
+
+	// Open and read the file with 1MB limit for safety
+	f, err := os.Open(path)
+	if err != nil {
+		return proto.Result{Status: "failed", Stderr: err.Error()}
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, 1<<20)) // 1MB limit
+	if err != nil {
+		return proto.Result{Status: "failed", Stderr: err.Error()}
+	}
+
+	return proto.Result{
+		Status:       "success",
+		Stdout:       string(data),
+		RollbackSafe: true, // Read-only operation
+	}
+}
+
+// handleNetFetch performs the _net.fetch operation.
+// Downloads a URL to a local file on the target.
+func handleNetFetch(executor *agentcontext.Executor, inputs map[string]any) proto.Result {
+	url, _ := inputs["url"].(string)
+	dest, _ := inputs["dest"].(string)
+	method, _ := inputs["method"].(string)
+
+	if url == "" {
+		return proto.Result{Status: "failed", Stderr: "missing 'url'"}
+	}
+	if dest == "" {
+		return proto.Result{Status: "failed", Stderr: "missing 'dest'"}
+	}
+
+	// Validate destination path is writable
+	if err := executor.ValidateFilePath(dest, agentcontext.FileOpWrite); err != nil {
+		return proto.Result{Status: "failed", Class: "context_enforcement_error", Stderr: err.Error()}
+	}
+
+	// Default to GET
+	if method == "" {
+		method = "GET"
+	}
+
+	// Create HTTP request with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return proto.Result{Status: "failed", Stderr: fmt.Sprintf("create request: %v", err)}
+	}
+
+	// Execute request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return proto.Result{Status: "failed", Stderr: fmt.Sprintf("fetch URL: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return proto.Result{Status: "failed", Stderr: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)}
+	}
+
+	// Create destination file
+	f, err := os.Create(dest)
+	if err != nil {
+		return proto.Result{Status: "failed", Stderr: fmt.Sprintf("create dest file: %v", err)}
+	}
+	defer f.Close()
+
+	// Write response body to file (with 100MB limit for safety)
+	_, err = io.Copy(f, io.LimitReader(resp.Body, 100<<20))
+	if err != nil {
+		return proto.Result{Status: "failed", Stderr: fmt.Sprintf("write dest file: %v", err)}
+	}
+
+	return proto.Result{
+		Status:       "success",
+		RollbackSafe: true,
 	}
 }

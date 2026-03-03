@@ -78,6 +78,22 @@ var PrimitiveDefaults = map[string]PrimitiveContextRequirements{
 		MinimumTrustLevel:  TrustLevelHigh,
 		RequiresFilesystem: true,
 	},
+	"_fs.exists": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_fs.stat": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+	},
+	"_net.fetch": {
+		DefaultContextName: "default",
+		MinimumTrustLevel:  TrustLevelLow,
+		RequiresFilesystem: true,
+		RequiresNetwork:    true,
+	},
 }
 
 // ResolveContext determines which execution context to use for a given primitive.

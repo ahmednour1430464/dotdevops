@@ -137,7 +137,7 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
 		})
 		return
 
-	case "_fs.write", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat":
+	case "_fs.write", "_fs.mkdir", "_fs.delete", "_fs.chmod", "_fs.chown", "_fs.exists", "_fs.stat", "_fs.read", "_net.fetch":
 		executor := &agentcontext.Executor{
 			Context:       ctx,
 			NodeID:        req.NodeID,
@@ -160,6 +160,10 @@ func handleApply(raw []byte, r *bufio.Reader, enc *json.Encoder,
 			res = handleFSExists(executor, full.Inputs)
 		case "_fs.stat":
 			res = handleFSStat(executor, full.Inputs)
+		case "_fs.read":
+			res = handleFSRead(executor, full.Inputs)
+		case "_net.fetch":
+			res = handleNetFetch(executor, full.Inputs)
 		}
 		_ = enc.Encode(proto.ApplyResp{
 			Type:   "apply_resp",
