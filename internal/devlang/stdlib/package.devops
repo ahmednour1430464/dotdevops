@@ -1,0 +1,311 @@
+// Standard library: package primitives (v1.4+)
+// These primitives provide idempotent package management across multiple
+// package managers: apt (Debian/Ubuntu), yum/dnf (RHEL/CentOS/Fedora), apk (Alpine).
+
+version = "v1.4"
+
+// Helper: Detect package manager
+// Returns: apt, yum, dnf, or apk
+
+// package.install: Install one or more packages.
+// Automatically detects the package manager.
+primitive "package.install" {
+    inputs {
+        name    = list<string>  // Package name(s) to install
+        version = string        // Version constraint (optional, e.g., "1.2.3")
+        manager = string        // Package manager override (apt/yum/dnf/apk, optional)
+    }
+
+    prepare {
+        // Auto-detect package manager if not specified
+        pm = inputs.manager != "" ? inputs.manager : (
+            _fs.exists("/usr/bin/apt-get") ? "apt" : (
+                _fs.exists("/usr/bin/dnf") ? "dnf" : (
+                    _fs.exists("/usr/bin/yum") ? "yum" : "apk"
+                )
+            )
+        )
+        // Build package list with optional version
+        packages = inputs.version != "" ? 
+            [inputs.name[0] + "=" + inputs.version] : 
+            inputs.name
+    }
+
+    probe {
+        // Check if packages are installed using appropriate command
+        installed = prepare.pm == "apt" ?
+            _exec.cmd(["sh", "-c", "dpkg -l " + join(inputs.name, " ") + " 2>/dev/null | grep -q '^ii'"]) :
+            (prepare.pm == "apk" ?
+                _exec.cmd(["sh", "-c", "apk info -e " + join(inputs.name, " ")]) :
+                _exec.cmd(["sh", "-c", "rpm -q " + join(inputs.name, " ") + " >/dev/null 2>&1"])
+            )
+        is_installed = installed.exit_code == 0
+    }
+
+    desired {
+        is_installed = true
+    }
+
+    body {
+        node "install_packages" {
+            type = _exec
+            cmd  = prepare.pm == "apt" ?
+                ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get install -y " + join(prepare.packages, " ")] :
+                (prepare.pm == "apk" ?
+                    ["apk", "add"] + prepare.packages :
+                    (prepare.pm == "dnf" ?
+                        ["dnf", "install", "-y"] + prepare.packages :
+                        ["yum", "install", "-y"] + prepare.packages
+                    )
+                )
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// package.remove: Remove one or more packages.
+primitive "package.remove" {
+    inputs {
+        name    = list<string>  // Package name(s) to remove
+        purge   = bool          // Purge config files (apt only, optional)
+        manager = string        // Package manager override (optional)
+    }
+
+    prepare {
+        pm = inputs.manager != "" ? inputs.manager : (
+            _fs.exists("/usr/bin/apt-get") ? "apt" : (
+                _fs.exists("/usr/bin/dnf") ? "dnf" : (
+                    _fs.exists("/usr/bin/yum") ? "yum" : "apk"
+                )
+            )
+        )
+    }
+
+    probe {
+        installed = prepare.pm == "apt" ?
+            _exec.cmd(["sh", "-c", "dpkg -l " + join(inputs.name, " ") + " 2>/dev/null | grep -q '^ii'"]) :
+            (prepare.pm == "apk" ?
+                _exec.cmd(["sh", "-c", "apk info -e " + join(inputs.name, " ")]) :
+                _exec.cmd(["sh", "-c", "rpm -q " + join(inputs.name, " ") + " >/dev/null 2>&1"])
+            )
+        is_installed = installed.exit_code == 0
+    }
+
+    desired {
+        is_installed = false
+    }
+
+    body {
+        node "remove_packages" {
+            type = _exec
+            cmd  = prepare.pm == "apt" ?
+                (inputs.purge ?
+                    ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get purge -y " + join(inputs.name, " ")] :
+                    ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get remove -y " + join(inputs.name, " ")]
+                ) :
+                (prepare.pm == "apk" ?
+                    ["apk", "del"] + inputs.name :
+                    (prepare.pm == "dnf" ?
+                        ["dnf", "remove", "-y"] + inputs.name :
+                        ["yum", "remove", "-y"] + inputs.name
+                    )
+                )
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// package.update: Update package cache/index.
+primitive "package.update" {
+    inputs {
+        manager = string  // Package manager override (optional)
+    }
+
+    prepare {
+        pm = inputs.manager != "" ? inputs.manager : (
+            _fs.exists("/usr/bin/apt-get") ? "apt" : (
+                _fs.exists("/usr/bin/dnf") ? "dnf" : (
+                    _fs.exists("/usr/bin/yum") ? "yum" : "apk"
+                )
+            )
+        )
+    }
+
+    body {
+        node "update_cache" {
+            type = _exec
+            cmd  = prepare.pm == "apt" ?
+                ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get update"] :
+                (prepare.pm == "apk" ?
+                    ["apk", "update"] :
+                    // yum/dnf update is equivalent to upgrade; use makecache
+                    (prepare.pm == "dnf" ?
+                        ["dnf", "makecache"] :
+                        ["yum", "makecache"]
+                    )
+                )
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// package.upgrade: Upgrade all installed packages.
+primitive "package.upgrade" {
+    inputs {
+        manager = string  // Package manager override (optional)
+    }
+
+    prepare {
+        pm = inputs.manager != "" ? inputs.manager : (
+            _fs.exists("/usr/bin/apt-get") ? "apt" : (
+                _fs.exists("/usr/bin/dnf") ? "dnf" : (
+                    _fs.exists("/usr/bin/yum") ? "yum" : "apk"
+                )
+            )
+        )
+    }
+
+    body {
+        node "upgrade_packages" {
+            type = _exec
+            cmd  = prepare.pm == "apt" ?
+                ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"] :
+                (prepare.pm == "apk" ?
+                    ["apk", "upgrade"] :
+                    (prepare.pm == "dnf" ?
+                        ["dnf", "upgrade", "-y"] :
+                        ["yum", "upgrade", "-y"]
+                    )
+                )
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// package.dist_upgrade: Full distribution upgrade (apt only).
+primitive "package.dist_upgrade" {
+    inputs {
+    }
+
+    body {
+        node "dist_upgrade" {
+            type = _exec
+            cmd  = ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// package.autoremove: Remove unnecessary packages.
+primitive "package.autoremove" {
+    inputs {
+        manager = string  // Package manager override (optional)
+    }
+
+    prepare {
+        pm = inputs.manager != "" ? inputs.manager : (
+            _fs.exists("/usr/bin/apt-get") ? "apt" : (
+                _fs.exists("/usr/bin/dnf") ? "dnf" : (
+                    _fs.exists("/usr/bin/yum") ? "yum" : "apk"
+                )
+            )
+        )
+    }
+
+    body {
+        node "autoremove_packages" {
+            type = _exec
+            cmd  = prepare.pm == "apt" ?
+                ["sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y"] :
+                (prepare.pm == "dnf" ?
+                    ["dnf", "autoremove", "-y"] :
+                    (prepare.pm == "yum" ?
+                        ["yum", "autoremove", "-y"] :
+                        // apk doesn't have autoremove, use cache clean
+                        ["apk", "cache", "clean"]
+                    )
+                )
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// package.hold: Hold a package at current version (apt only).
+primitive "package.hold" {
+    inputs {
+        name = list<string>  // Package name(s) to hold
+    }
+
+    probe {
+        held = _exec.cmd(["sh", "-c", "apt-mark showhold | grep -q '" + join(inputs.name, "\\|") + "'"])
+        is_held = held.exit_code == 0
+    }
+
+    desired {
+        is_held = true
+    }
+
+    body {
+        node "hold_package" {
+            type = _exec
+            cmd  = ["apt-mark", "hold"] + inputs.name
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// package.unhold: Remove hold from a package (apt only).
+primitive "package.unhold" {
+    inputs {
+        name = list<string>  // Package name(s) to unhold
+    }
+
+    probe {
+        held = _exec.cmd(["sh", "-c", "apt-mark showhold | grep -q '" + join(inputs.name, "\\|") + "'"])
+        is_held = held.exit_code == 0
+    }
+
+    desired {
+        is_held = false
+    }
+
+    body {
+        node "unhold_package" {
+            type = _exec
+            cmd  = ["apt-mark", "unhold"] + inputs.name
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}

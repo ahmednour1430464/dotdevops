@@ -1,0 +1,212 @@
+// Standard library: process primitives (v1.4+)
+// These primitives provide idempotent process execution with probe-based state checking.
+
+version = "v1.4"
+
+// process.exec: Execute a command with environment and timeout support.
+// This is the core process execution primitive.
+primitive "process.exec" {
+    inputs {
+        cmd     = list<string>  // Command and arguments to execute
+        cwd     = string        // Working directory (optional)
+        env     = map<string, string>  // Environment variables (optional)
+        timeout = int           // Timeout in seconds (optional, 0 = no timeout)
+    }
+
+    body {
+        node "exec" {
+            type    = _exec
+            cmd     = inputs.cmd
+            cwd     = inputs.cwd
+            env     = inputs.env
+            timeout = inputs.timeout
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "remote"
+    }
+}
+
+// process.shell: Execute a shell command string.
+// Convenience wrapper for running shell commands via sh -c.
+primitive "process.shell" {
+    inputs {
+        command = string  // Shell command string to execute
+        cwd     = string  // Working directory (optional)
+        env     = map<string, string>  // Environment variables (optional)
+        timeout = int     // Timeout in seconds (optional, 0 = no timeout)
+    }
+
+    body {
+        node "shell_exec" {
+            type    = _exec
+            cmd     = ["sh", "-c", inputs.command]
+            cwd     = inputs.cwd
+            env     = inputs.env
+            timeout = inputs.timeout
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "remote"
+    }
+}
+
+// process.script: Execute a multi-line script.
+// Writes the script to a temp file and executes it.
+primitive "process.script" {
+    inputs {
+        content  = string  // Script content to execute
+        interpreter = string  // Interpreter (default: /bin/sh)
+        cwd      = string  // Working directory (optional)
+        env      = map<string, string>  // Environment variables (optional)
+        timeout  = int     // Timeout in seconds (optional, 0 = no timeout)
+    }
+
+    prepare {
+        interpreter = inputs.interpreter != "" ? inputs.interpreter : "/bin/sh"
+        script_path = "/tmp/.devopsctl_script_" + _ctrl.hash(inputs.content)
+    }
+
+    body {
+        node "write_script" {
+            type    = _fs.write
+            path    = prepare.script_path
+            content = inputs.content
+            mode    = "0700"
+        }
+
+        node "exec_script" {
+            type    = _exec
+            cmd     = [prepare.interpreter, prepare.script_path]
+            cwd     = inputs.cwd
+            env     = inputs.env
+            timeout = inputs.timeout
+        }
+
+        node "cleanup_script" {
+            type = _fs.delete
+            path = prepare.script_path
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "remote"
+    }
+}
+
+// process.wait: Wait for a process to finish or check if running.
+// Uses pid file or process name to track process state.
+primitive "process.wait" {
+    inputs {
+        pid_file = string  // Path to PID file
+        timeout  = int     // Maximum wait time in seconds (default: 60)
+        interval = int     // Check interval in seconds (default: 1)
+    }
+
+    prepare {
+        timeout_val  = inputs.timeout > 0 ? inputs.timeout : 60
+        interval_val = inputs.interval > 0 ? inputs.interval : 1
+    }
+
+    probe {
+        exists = _fs.exists(inputs.pid_file)
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "wait_loop" {
+            type    = _exec
+            cmd     = ["sh", "-c", "while [ -f '" + inputs.pid_file + "' ]; do sleep " + string(prepare.interval_val) + "; done"]
+            timeout = prepare.timeout_val
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// process.kill: Send a signal to a process.
+// Uses PID file to identify the process.
+primitive "process.kill" {
+    inputs {
+        pid_file = string  // Path to PID file
+        signal   = string  // Signal to send (default: TERM)
+    }
+
+    prepare {
+        sig = inputs.signal != "" ? inputs.signal : "TERM"
+    }
+
+    probe {
+        exists = _fs.exists(inputs.pid_file)
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "read_pid" {
+            type = _fs.read
+            path = inputs.pid_file
+        }
+
+        node "kill_process" {
+            type = _exec
+            cmd  = ["kill", "-" + prepare.sig, "$(cat " + inputs.pid_file + ")"]
+        }
+
+        node "remove_pid" {
+            type = _fs.delete
+            path = inputs.pid_file
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// process.ensure: Ensure a process is running.
+// Starts the process if not already running, tracks via PID file.
+primitive "process.ensure" {
+    inputs {
+        cmd      = list<string>  // Command to run
+        pid_file = string        // Path to PID file for tracking
+        cwd      = string        // Working directory (optional)
+        env      = map<string, string>  // Environment variables (optional)
+    }
+
+    probe {
+        pid_exists = _fs.exists(inputs.pid_file)
+    }
+
+    desired {
+        pid_exists = true
+    }
+
+    body {
+        node "start_process" {
+            type    = _exec
+            cmd     = ["sh", "-c", "nohup " + join(inputs.cmd, " ") + " > /dev/null 2>&1 & echo $! > " + inputs.pid_file]
+            cwd     = inputs.cwd
+            env     = inputs.env
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}

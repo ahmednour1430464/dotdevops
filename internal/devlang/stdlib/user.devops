@@ -1,0 +1,413 @@
+// Standard library: user and group primitives (v1.4+)
+// These primitives provide idempotent user and group management.
+// Supports cross-distro compatibility (Debian/RHEL/Alpine).
+
+version = "v1.4"
+
+// user.create: Create a user account.
+primitive "user.create" {
+    inputs {
+        name        = string  // Username
+        comment     = string  // GECOS comment (full name, optional)
+        home        = string  // Home directory (optional, default: /home/<name>)
+        shell       = string  // Login shell (optional, default: /bin/sh or /sbin/nologin)
+        groups      = list<string>  // Additional groups (optional)
+        system      = bool    // Create as system user (optional)
+        uid         = int     // Specific UID (optional)
+        create_home = bool    // Create home directory (optional, default: true)
+        password    = string  // Password hash (optional, use mkpasswd)
+    }
+
+    prepare {
+        home_val = inputs.home != "" ? inputs.home : "/home/" + inputs.name
+        shell_val = inputs.shell != "" ? inputs.shell : "/bin/sh"
+        use_adduser = _fs.exists("/usr/sbin/adduser")
+    }
+
+    probe {
+        exists = _exec.cmd(["id", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "create_user" {
+            type = _exec
+            cmd  = prepare.use_adduser ?
+                // Debian-style adduser (interactive-friendly)
+                ["sh", "-c", "adduser --disabled-password --gecos '" + inputs.comment + "' " +
+                    (inputs.system ? "--system " : "") +
+                    (inputs.create_home ? "--create-home " : "--no-create-home ") +
+                    (inputs.home != "" ? "--home '" + inputs.home + "' " : "") +
+                    (inputs.shell != "" ? "--shell '" + inputs.shell + "' " : "") +
+                    (inputs.uid > 0 ? "--uid " + string(inputs.uid) + " " : "") +
+                    inputs.name] :
+                // RHEL/Alpine-style useradd
+                ["useradd", 
+                    (inputs.comment != "" ? "-c" : ""), (inputs.comment != "" ? inputs.comment : ""),
+                    (inputs.home != "" ? "-d" : ""), (inputs.home != "" ? inputs.home : ""),
+                    (inputs.shell != "" ? "-s" : ""), (inputs.shell != "" ? inputs.shell : ""),
+                    (inputs.system ? "-r" : ""),
+                    (inputs.uid > 0 ? "-u" : ""), (inputs.uid > 0 ? string(inputs.uid) : ""),
+                    (inputs.create_home ? "-m" : "-M"),
+                    inputs.name]
+        }
+
+        node "set_password" {
+            type = _exec
+            cmd  = inputs.password != "" ? 
+                ["sh", "-c", "echo '" + inputs.name + ":" + inputs.password + "' | chpasswd -e"] :
+                ["true"]
+        }
+
+        node "add_groups" {
+            type = _exec
+            cmd  = inputs.groups != [] ?
+                ["sh", "-c", "for g in " + join(inputs.groups, " ") + "; do usermod -aG $g " + inputs.name + "; done"] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// user.remove: Remove a user account.
+primitive "user.remove" {
+    inputs {
+        name      = string  // Username
+        remove_home = bool  // Remove home directory (optional)
+        force     = bool    // Force removal (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["id", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "remove_user" {
+            type = _exec
+            cmd  = _fs.exists("/usr/sbin/deluser") ?
+                ["deluser", 
+                    (inputs.remove_home ? "--remove-home" : ""),
+                    (inputs.force ? "--force" : ""),
+                    inputs.name] :
+                ["userdel",
+                    (inputs.remove_home ? "-r" : ""),
+                    (inputs.force ? "-f" : ""),
+                    inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// user.modify: Modify user properties.
+primitive "user.modify" {
+    inputs {
+        name    = string  // Username
+        shell   = string  // New login shell (optional)
+        home    = string  // New home directory (optional)
+        groups  = list<string>  // New groups (replaces existing, optional)
+        append_groups = list<string>  // Groups to append (optional)
+        comment = string  // New comment (optional)
+        uid     = int     // New UID (optional)
+        lock    = bool    // Lock account (optional)
+        unlock  = bool    // Unlock account (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["id", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "modify_user" {
+            type = _exec
+            cmd  = ["usermod",
+                (inputs.shell != "" ? "-s" : ""), (inputs.shell != "" ? inputs.shell : ""),
+                (inputs.home != "" ? "-d" : ""), (inputs.home != "" ? inputs.home : ""),
+                (inputs.comment != "" ? "-c" : ""), (inputs.comment != "" ? inputs.comment : ""),
+                (inputs.uid > 0 ? "-u" : ""), (inputs.uid > 0 ? string(inputs.uid) : ""),
+                (inputs.lock ? "-L" : ""),
+                (inputs.unlock ? "-U" : ""),
+                inputs.name]
+        }
+
+        node "set_groups" {
+            type = _exec
+            cmd  = inputs.groups != [] ?
+                ["usermod", "-G", join(inputs.groups, ","), inputs.name] :
+                ["true"]
+        }
+
+        node "append_groups" {
+            type = _exec
+            cmd  = inputs.append_groups != [] ?
+                ["sh", "-c", "for g in " + join(inputs.append_groups, " ") + "; do usermod -aG $g " + inputs.name + "; done"] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// user.lock: Lock a user account.
+primitive "user.lock" {
+    inputs {
+        name = string  // Username
+    }
+
+    probe {
+        status = _exec.cmd(["sh", "-c", "passwd -S " + inputs.name + " | cut -d' ' -f2"]).stdout
+        is_locked = status == "L" || status == "LK"
+    }
+
+    desired {
+        is_locked = true
+    }
+
+    body {
+        node "lock_user" {
+            type = _exec
+            cmd  = ["usermod", "-L", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// user.unlock: Unlock a user account.
+primitive "user.unlock" {
+    inputs {
+        name = string  // Username
+    }
+
+    probe {
+        status = _exec.cmd(["sh", "-c", "passwd -S " + inputs.name + " | cut -d' ' -f2"]).stdout
+        is_locked = status == "L" || status == "LK"
+    }
+
+    desired {
+        is_locked = false
+    }
+
+    body {
+        node "unlock_user" {
+            type = _exec
+            cmd  = ["usermod", "-U", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// user.ensure: Ensure user exists with specified properties.
+primitive "user.ensure" {
+    inputs {
+        name    = string  // Username
+        comment = string  // Full name (optional)
+        shell   = string  // Login shell (optional)
+        groups  = list<string>  // Groups (optional)
+        home    = string  // Home directory (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["id", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "ensure_user" {
+            type = _exec
+            cmd  = _fs.exists("/usr/sbin/adduser") ?
+                ["sh", "-c", "adduser --disabled-password --gecos '" + inputs.comment + "' " +
+                    (inputs.home != "" ? "--home '" + inputs.home + "' " : "") +
+                    (inputs.shell != "" ? "--shell '" + inputs.shell + "' " : "") +
+                    inputs.name + " 2>/dev/null || true"] :
+                ["sh", "-c", "useradd " +
+                    (inputs.comment != "" ? "-c '" + inputs.comment + "' " : "") +
+                    (inputs.home != "" ? "-d '" + inputs.home + "' " : "") +
+                    (inputs.shell != "" ? "-s '" + inputs.shell + "' " : "") +
+                    "-m " + inputs.name + " 2>/dev/null || true"]
+        }
+
+        node "ensure_groups" {
+            type = _exec
+            cmd  = inputs.groups != [] ?
+                ["sh", "-c", "for g in " + join(inputs.groups, " ") + "; do usermod -aG $g " + inputs.name + " 2>/dev/null; done"] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// group.create: Create a group.
+primitive "group.create" {
+    inputs {
+        name   = string  // Group name
+        gid    = int     // Specific GID (optional)
+        system = bool    // Create as system group (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["getent", "group", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "create_group" {
+            type = _exec
+            cmd  = _fs.exists("/usr/sbin/addgroup") ?
+                ["addgroup",
+                    (inputs.system ? "--system" : ""),
+                    (inputs.gid > 0 ? "--gid" : ""), (inputs.gid > 0 ? string(inputs.gid) : ""),
+                    inputs.name] :
+                ["groupadd",
+                    (inputs.system ? "-r" : ""),
+                    (inputs.gid > 0 ? "-g" : ""), (inputs.gid > 0 ? string(inputs.gid) : ""),
+                    inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// group.remove: Remove a group.
+primitive "group.remove" {
+    inputs {
+        name = string  // Group name
+        force = bool   // Force removal (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["getent", "group", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "remove_group" {
+            type = _exec
+            cmd  = _fs.exists("/usr/sbin/delgroup") ?
+                ["delgroup", (inputs.force ? "--force" : ""), inputs.name] :
+                ["groupdel", (inputs.force ? "-f" : ""), inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// group.modify: Modify group properties.
+primitive "group.modify" {
+    inputs {
+        name = string  // Group name
+        gid  = int     // New GID (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["getent", "group", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "modify_group" {
+            type = _exec
+            cmd  = ["groupmod",
+                (inputs.gid > 0 ? "-g" : ""), (inputs.gid > 0 ? string(inputs.gid) : ""),
+                inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// user.ssh_key: Add SSH authorized key for a user.
+primitive "user.ssh_key" {
+    inputs {
+        user    = string  // Username
+        key     = string  // Public SSH key
+        comment = string  // Key comment (optional)
+        state   = string  // "present" or "absent" (default: present)
+    }
+
+    prepare {
+        state_val = inputs.state != "" ? inputs.state : "present"
+        ssh_dir = "/home/" + inputs.user + "/.ssh"
+        auth_file = prepare.ssh_dir + "/authorized_keys"
+    }
+
+    probe {
+        key_present = _exec.cmd(["sh", "-c", "grep -qF '" + inputs.key + "' " + prepare.auth_file + " 2>/dev/null"]).exit_code == 0
+    }
+
+    desired {
+        key_present = prepare.state_val == "present"
+    }
+
+    body {
+        node "ensure_ssh_dir" {
+            type = _exec
+            cmd  = ["sh", "-c", "mkdir -p " + prepare.ssh_dir + " && chmod 700 " + prepare.ssh_dir + " && chown " + inputs.user + ":" + inputs.user + " " + prepare.ssh_dir]
+        }
+
+        node "add_ssh_key" {
+            type = _exec
+            cmd  = prepare.state_val == "present" ?
+                ["sh", "-c", "echo '" + inputs.key + (inputs.comment != "" ? " " + inputs.comment : "") + "' >> " + prepare.auth_file + " && chmod 600 " + prepare.auth_file + " && chown " + inputs.user + ":" + inputs.user + " " + prepare.auth_file] :
+                ["sh", "-c", "grep -vF '" + inputs.key + "' " + prepare.auth_file + " > " + prepare.auth_file + ".tmp && mv " + prepare.auth_file + ".tmp " + prepare.auth_file + " || true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}

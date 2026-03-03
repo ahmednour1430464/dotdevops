@@ -1,0 +1,280 @@
+// Standard library: service primitives (v1.4+)
+// These primitives provide idempotent service management using systemctl.
+// Supports systemd-based systems (most modern Linux distributions).
+
+version = "v1.4"
+
+// service.start: Start a systemd service.
+primitive "service.start" {
+    inputs {
+        name = string  // Service name (e.g., "nginx", "docker")
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-active", inputs.name]).stdout
+        is_active = status == "active"
+    }
+
+    desired {
+        is_active = true
+    }
+
+    body {
+        node "start_service" {
+            type = _exec
+            cmd  = ["systemctl", "start", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.stop: Stop a systemd service.
+primitive "service.stop" {
+    inputs {
+        name = string  // Service name
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-active", inputs.name]).stdout
+        is_active = status == "active"
+    }
+
+    desired {
+        is_active = false
+    }
+
+    body {
+        node "stop_service" {
+            type = _exec
+            cmd  = ["systemctl", "stop", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.restart: Restart a systemd service.
+primitive "service.restart" {
+    inputs {
+        name = string  // Service name
+    }
+
+    body {
+        node "restart_service" {
+            type = _exec
+            cmd  = ["systemctl", "restart", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.reload: Reload a systemd service configuration.
+primitive "service.reload" {
+    inputs {
+        name = string  // Service name
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-active", inputs.name]).stdout
+        is_active = status == "active"
+    }
+
+    desired {
+        is_active = true
+    }
+
+    body {
+        node "reload_service" {
+            type = _exec
+            cmd  = ["systemctl", "reload", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.enable: Enable a service to start at boot.
+primitive "service.enable" {
+    inputs {
+        name    = string  // Service name
+        now     = bool    // Start immediately if true (optional, default: false)
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-enabled", inputs.name]).stdout
+        is_enabled = status == "enabled"
+    }
+
+    desired {
+        is_enabled = true
+    }
+
+    body {
+        node "enable_service" {
+            type = _exec
+            cmd  = inputs.now ? ["systemctl", "enable", "--now", inputs.name] : ["systemctl", "enable", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.disable: Disable a service from starting at boot.
+primitive "service.disable" {
+    inputs {
+        name    = string  // Service name
+        now     = bool    // Stop immediately if true (optional, default: false)
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-enabled", inputs.name]).stdout
+        is_enabled = status == "enabled"
+    }
+
+    desired {
+        is_enabled = false
+    }
+
+    body {
+        node "disable_service" {
+            type = _exec
+            cmd  = inputs.now ? ["systemctl", "disable", "--now", inputs.name] : ["systemctl", "disable", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.mask: Mask a service (prevent it from being started).
+primitive "service.mask" {
+    inputs {
+        name = string  // Service name
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-enabled", inputs.name]).stdout
+        is_masked = status == "masked"
+    }
+
+    desired {
+        is_masked = true
+    }
+
+    body {
+        node "mask_service" {
+            type = _exec
+            cmd  = ["systemctl", "mask", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.unmask: Unmask a service (allow it to be started).
+primitive "service.unmask" {
+    inputs {
+        name = string  // Service name
+    }
+
+    probe {
+        status = _exec.cmd(["systemctl", "is-enabled", inputs.name]).stdout
+        is_masked = status == "masked"
+    }
+
+    desired {
+        is_masked = false
+    }
+
+    body {
+        node "unmask_service" {
+            type = _exec
+            cmd  = ["systemctl", "unmask", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// service.daemon_reload: Reload systemd daemon configuration.
+// Call this after adding or modifying unit files.
+primitive "service.daemon_reload" {
+    inputs {
+    }
+
+    body {
+        node "reload_daemon" {
+            type = _exec
+            cmd  = ["systemctl", "daemon-reload"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// service.ensure: Ensure a service is running and enabled at boot.
+// Combines start and enable in one primitive.
+primitive "service.ensure" {
+    inputs {
+        name     = string  // Service name
+        enabled  = bool    // Enable at boot (default: true)
+        running  = bool    // Ensure running (default: true)
+    }
+
+    prepare {
+        do_enable = inputs.enabled || true
+        do_run    = inputs.running || true
+    }
+
+    probe {
+        active_status = _exec.cmd(["systemctl", "is-active", inputs.name]).stdout
+        enabled_status = _exec.cmd(["systemctl", "is-enabled", inputs.name]).stdout
+        is_active  = active_status == "active"
+        is_enabled = enabled_status == "enabled"
+    }
+
+    desired {
+        is_active  = prepare.do_run
+        is_enabled = prepare.do_enable
+    }
+
+    body {
+        node "ensure_service" {
+            type = _exec
+            cmd  = ["systemctl", "enable", "--now", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}

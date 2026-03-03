@@ -1,0 +1,595 @@
+// Standard library: container primitives (v1.4+)
+// These primitives provide Docker container management operations.
+
+version = "v1.4"
+
+// docker.pull: Pull a container image.
+primitive "docker.pull" {
+    inputs {
+        image    = string  // Image name (e.g., "nginx:latest")
+        platform = string  // Platform (e.g., "linux/amd64", optional)
+    }
+
+    probe {
+        image_exists = _exec.cmd(["docker", "image", "inspect", inputs.image]).exit_code == 0
+    }
+
+    desired {
+        image_exists = true
+    }
+
+    body {
+        node "pull_image" {
+            type = _exec
+            cmd  = ["docker", "pull",
+                (inputs.platform != "" ? "--platform" : ""), (inputs.platform != "" ? inputs.platform : ""),
+                inputs.image]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// docker.build: Build a container image from Dockerfile.
+primitive "docker.build" {
+    inputs {
+        path     = string  // Build context path
+        tag      = string  // Image tag
+        dockerfile = string  // Dockerfile path (optional)
+        build_args = map<string, string>  // Build arguments (optional)
+        no_cache = bool    // Don't use cache (optional)
+        platform = string  // Platform (optional)
+    }
+
+    prepare {
+        dockerfile_path = inputs.dockerfile != "" ? inputs.dockerfile : "Dockerfile"
+    }
+
+    body {
+        node "build_image" {
+            type = _exec
+            cmd  = ["docker", "build",
+                "-t", inputs.tag,
+                "-f", prepare.dockerfile_path,
+                (inputs.no_cache ? "--no-cache" : ""),
+                (inputs.platform != "" ? "--platform" : ""), (inputs.platform != "" ? inputs.platform : ""),
+                join(map(inputs.build_args, fn(k, v) { "--build-arg=" + k + "=" + v }), " "),
+                inputs.path]
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "local"
+    }
+}
+
+// docker.run: Run a container.
+primitive "docker.run" {
+    inputs {
+        image     = string  // Image name
+        name      = string  // Container name
+        command   = list<string>  // Command to run (optional)
+        env       = map<string, string>  // Environment variables (optional)
+        ports     = list<string>  // Port mappings (e.g., ["8080:80"])
+        volumes   = list<string>  // Volume mappings (e.g., ["/host:/container"])
+        network   = string  // Network name (optional)
+        restart   = string  // Restart policy (no, always, on-failure, unless-stopped)
+        detach    = bool    // Run in background (default: true)
+        remove    = bool    // Remove container on exit (optional)
+        user      = string  // User to run as (optional)
+        workdir   = string  // Working directory (optional)
+        privileged = bool   // Run in privileged mode (optional)
+        caps_add  = list<string>  // Add capabilities (optional)
+        caps_drop = list<string>  // Drop capabilities (optional)
+    }
+
+    prepare {
+        do_detach = inputs.detach || true
+    }
+
+    probe {
+        container_exists = _exec.cmd(["docker", "inspect", inputs.name]).exit_code == 0
+        is_running = _exec.cmd(["sh", "-c", "docker inspect -f '{{.State.Running}}' " + inputs.name + " 2>/dev/null"]).stdout == "true"
+    }
+
+    desired {
+        container_exists = true
+        is_running = true
+    }
+
+    body {
+        node "remove_existing" {
+            type = _exec
+            cmd  = probe.container_exists ?
+                ["docker", "rm", "-f", inputs.name] :
+                ["true"]
+        }
+
+        node "run_container" {
+            type = _exec
+            cmd  = ["docker", "run",
+                "--name", inputs.name,
+                (prepare.do_detach ? "-d" : ""),
+                (inputs.remove ? "--rm" : ""),
+                (inputs.restart != "" ? "--restart" : ""), (inputs.restart != "" ? inputs.restart : ""),
+                (inputs.network != "" ? "--network" : ""), (inputs.network != "" ? inputs.network : ""),
+                (inputs.user != "" ? "--user" : ""), (inputs.user != "" ? inputs.user : ""),
+                (inputs.workdir != "" ? "--workdir" : ""), (inputs.workdir != "" ? inputs.workdir : ""),
+                (inputs.privileged ? "--privileged" : ""),
+                join(map(inputs.ports, fn(p) { "-p " + p }), " "),
+                join(map(inputs.volumes, fn(v) { "-v " + v }), " "),
+                join(map(inputs.env, fn(k, v) { "-e " + k + "=" + v }), " "),
+                join(map(inputs.caps_add, fn(c) { "--cap-add=" + c }), " "),
+                join(map(inputs.caps_drop, fn(c) { "--cap-drop=" + c }), " "),
+                inputs.image] + inputs.command
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// docker.stop: Stop a container.
+primitive "docker.stop" {
+    inputs {
+        name    = string  // Container name or ID
+        timeout = int     // Seconds to wait before killing (optional, default: 10)
+    }
+
+    prepare {
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 10
+    }
+
+    probe {
+        is_running = _exec.cmd(["sh", "-c", "docker inspect -f '{{.State.Running}}' " + inputs.name + " 2>/dev/null"]).stdout == "true"
+    }
+
+    desired {
+        is_running = false
+    }
+
+    body {
+        node "stop_container" {
+            type = _exec
+            cmd  = ["docker", "stop", "-t", string(prepare.timeout_val), inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.start: Start a stopped container.
+primitive "docker.start" {
+    inputs {
+        name = string  // Container name or ID
+    }
+
+    probe {
+        is_running = _exec.cmd(["sh", "-c", "docker inspect -f '{{.State.Running}}' " + inputs.name + " 2>/dev/null"]).stdout == "true"
+    }
+
+    desired {
+        is_running = true
+    }
+
+    body {
+        node "start_container" {
+            type = _exec
+            cmd  = ["docker", "start", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.restart: Restart a container.
+primitive "docker.restart" {
+    inputs {
+        name    = string  // Container name or ID
+        timeout = int     // Seconds to wait before killing (optional)
+    }
+
+    body {
+        node "restart_container" {
+            type = _exec
+            cmd  = ["docker", "restart",
+                (inputs.timeout > 0 ? "-t" : ""), (inputs.timeout > 0 ? string(inputs.timeout) : ""),
+                inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.remove: Remove a container.
+primitive "docker.remove" {
+    inputs {
+        name  = string  // Container name or ID
+        force = bool    // Force removal (optional)
+        vols  = bool    // Remove volumes (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["docker", "inspect", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "remove_container" {
+            type = _exec
+            cmd  = ["docker", "rm",
+                (inputs.force ? "-f" : ""),
+                (inputs.vols ? "-v" : ""),
+                inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.exec: Execute a command in a running container.
+primitive "docker.exec" {
+    inputs {
+        name    = string  // Container name
+        command = list<string>  // Command to execute
+        user    = string  // User to run as (optional)
+        workdir = string  // Working directory (optional)
+        env     = map<string, string>  // Environment variables (optional)
+        detach  = bool    // Detached mode (optional)
+        tty     = bool    // Allocate TTY (optional)
+    }
+
+    body {
+        node "exec_command" {
+            type = _exec
+            cmd  = ["docker", "exec",
+                (inputs.detach ? "-d" : ""),
+                (inputs.tty ? "-t" : ""),
+                (inputs.user != "" ? "--user" : ""), (inputs.user != "" ? inputs.user : ""),
+                (inputs.workdir != "" ? "--workdir" : ""), (inputs.workdir != "" ? inputs.workdir : ""),
+                join(map(inputs.env, fn(k, v) { "-e " + k + "=" + v }), " "),
+                inputs.name] + inputs.command
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "remote"
+    }
+}
+
+// docker.image_remove: Remove an image.
+primitive "docker.image_remove" {
+    inputs {
+        image = string  // Image name or ID
+        force = bool    // Force removal (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["docker", "image", "inspect", inputs.image]).exit_code == 0
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "remove_image" {
+            type = _exec
+            cmd  = ["docker", "rmi",
+                (inputs.force ? "-f" : ""),
+                inputs.image]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.network_create: Create a Docker network.
+primitive "docker.network_create" {
+    inputs {
+        name    = string  // Network name
+        driver  = string  // Network driver (bridge, overlay, etc., optional)
+        subnet  = string  // Subnet in CIDR format (optional)
+        gateway = string  // Gateway IP (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["docker", "network", "inspect", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "create_network" {
+            type = _exec
+            cmd  = ["docker", "network", "create",
+                (inputs.driver != "" ? "--driver" : ""), (inputs.driver != "" ? inputs.driver : ""),
+                (inputs.subnet != "" ? "--subnet" : ""), (inputs.subnet != "" ? inputs.subnet : ""),
+                (inputs.gateway != "" ? "--gateway" : ""), (inputs.gateway != "" ? inputs.gateway : ""),
+                inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.network_remove: Remove a Docker network.
+primitive "docker.network_remove" {
+    inputs {
+        name = string  // Network name
+    }
+
+    probe {
+        exists = _exec.cmd(["docker", "network", "inspect", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "remove_network" {
+            type = _exec
+            cmd  = ["docker", "network", "rm", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.volume_create: Create a Docker volume.
+primitive "docker.volume_create" {
+    inputs {
+        name   = string  // Volume name
+        driver = string  // Volume driver (optional)
+        labels = map<string, string>  // Labels (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["docker", "volume", "inspect", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "create_volume" {
+            type = _exec
+            cmd  = ["docker", "volume", "create",
+                (inputs.driver != "" ? "--driver" : ""), (inputs.driver != "" ? inputs.driver : ""),
+                join(map(inputs.labels, fn(k, v) { "--label " + k + "=" + v }), " "),
+                inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.volume_remove: Remove a Docker volume.
+primitive "docker.volume_remove" {
+    inputs {
+        name  = string  // Volume name
+        force = bool    // Force removal (optional)
+    }
+
+    probe {
+        exists = _exec.cmd(["docker", "volume", "inspect", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        exists = false
+    }
+
+    body {
+        node "remove_volume" {
+            type = _exec
+            cmd  = ["docker", "volume", "rm",
+                (inputs.force ? "-f" : ""),
+                inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.compose_up: Run docker-compose up.
+primitive "docker.compose_up" {
+    inputs {
+        path      = string  // Path to docker-compose.yml
+        project   = string  // Project name (optional)
+        build     = bool    // Build images before starting (optional)
+        detach    = bool    // Detached mode (default: true)
+        remove_orphans = bool  // Remove orphan containers (optional)
+    }
+
+    prepare {
+        do_detach = inputs.detach || true
+    }
+
+    body {
+        node "compose_up" {
+            type = _exec
+            cmd  = ["docker-compose",
+                (inputs.project != "" ? "--project-name" : ""), (inputs.project != "" ? inputs.project : ""),
+                "-f", inputs.path,
+                "up",
+                (prepare.do_detach ? "-d" : ""),
+                (inputs.build ? "--build" : ""),
+                (inputs.remove_orphans ? "--remove-orphans" : "")]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// docker.compose_down: Run docker-compose down.
+primitive "docker.compose_down" {
+    inputs {
+        path    = string  // Path to docker-compose.yml
+        project = string  // Project name (optional)
+        volumes = bool    // Remove volumes (optional)
+        images  = bool    // Remove images (optional)
+    }
+
+    body {
+        node "compose_down" {
+            type = _exec
+            cmd  = ["docker-compose",
+                (inputs.project != "" ? "--project-name" : ""), (inputs.project != "" ? inputs.project : ""),
+                "-f", inputs.path,
+                "down",
+                (inputs.volumes ? "--volumes" : ""),
+                (inputs.images ? "--rmi" : ""), (inputs.images ? "all" : "")]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.prune: Remove unused Docker resources.
+primitive "docker.prune" {
+    inputs {
+        containers = bool  // Remove stopped containers (optional)
+        images     = bool  // Remove unused images (optional)
+        volumes    = bool  // Remove unused volumes (optional)
+        networks   = bool  // Remove unused networks (optional)
+        all        = bool  // Remove all unused resources (optional)
+        force      = bool  // Don't prompt for confirmation (optional)
+    }
+
+    body {
+        node "prune_all" {
+            type = _exec
+            cmd  = inputs.all ?
+                ["docker", "system", "prune", "-a", (inputs.force ? "-f" : "")] :
+                ["sh", "-c", "" +
+                    (inputs.containers ? "docker container prune " + (inputs.force ? "-f" : "") + "; " : "") +
+                    (inputs.images ? "docker image prune -a " + (inputs.force ? "-f" : "") + "; " : "") +
+                    (inputs.volumes ? "docker volume prune " + (inputs.force ? "-f" : "") + "; " : "") +
+                    (inputs.networks ? "docker network prune " + (inputs.force ? "-f" : "") : "")]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.login: Log in to a Docker registry.
+primitive "docker.login" {
+    inputs {
+        registry = string  // Registry URL (optional, default: Docker Hub)
+        username = string  // Username
+        password = string  // Password or token
+    }
+
+    body {
+        node "login" {
+            type = _exec
+            cmd  = ["docker", "login",
+                (inputs.registry != "" ? inputs.registry : ""),
+                "-u", inputs.username,
+                "--password-stdin"]
+            stdin = inputs.password
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.tag: Tag an image.
+primitive "docker.tag" {
+    inputs {
+        source = string  // Source image
+        target = string  // Target image tag
+    }
+
+    probe {
+        source_exists = _exec.cmd(["docker", "image", "inspect", inputs.source]).exit_code == 0
+    }
+
+    desired {
+        source_exists = true
+    }
+
+    body {
+        node "tag_image" {
+            type = _exec
+            cmd  = ["docker", "tag", inputs.source, inputs.target]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// docker.push: Push an image to a registry.
+primitive "docker.push" {
+    inputs {
+        image = string  // Image name to push
+    }
+
+    body {
+        node "push_image" {
+            type = _exec
+            cmd  = ["docker", "push", inputs.image]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}

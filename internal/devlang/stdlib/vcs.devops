@@ -1,0 +1,445 @@
+// Standard library: version control system primitives (v1.4+)
+// These primitives provide Git repository operations.
+
+version = "v1.4"
+
+// git.clone: Clone a Git repository.
+primitive "git.clone" {
+    inputs {
+        url      = string  // Repository URL
+        dest     = string  // Destination directory
+        branch   = string  // Branch to checkout (optional, default: default branch)
+        depth    = int     // Clone depth (optional, for shallow clone)
+        single_branch = bool  // Clone single branch (optional)
+        recursive = bool   // Clone with submodules (optional)
+        key_file = string  // SSH private key file path (optional)
+    }
+
+    probe {
+        dest_exists = _fs.exists(inputs.dest)
+        is_git_repo = _fs.exists(inputs.dest + "/.git")
+    }
+
+    desired {
+        is_git_repo = true
+    }
+
+    body {
+        node "setup_ssh_key" {
+            type = _exec
+            cmd  = inputs.key_file != "" ?
+                ["sh", "-c", "export GIT_SSH_COMMAND='ssh -i " + inputs.key_file + " -o StrictHostKeyChecking=no'"] :
+                ["true"]
+        }
+
+        node "clone_repo" {
+            type = _exec
+            cmd  = ["git", "clone",
+                (inputs.depth > 0 ? "--depth" : ""), (inputs.depth > 0 ? string(inputs.depth) : ""),
+                (inputs.single_branch ? "--single-branch" : ""),
+                (inputs.recursive ? "--recursive" : ""),
+                (inputs.branch != "" ? "--branch" : ""), (inputs.branch != "" ? inputs.branch : ""),
+                inputs.url,
+                inputs.dest]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// git.checkout: Checkout a branch, tag, or commit.
+primitive "git.checkout" {
+    inputs {
+        path     = string  // Repository path
+        ref      = string  // Branch, tag, or commit SHA
+        create   = bool    // Create new branch if not exists (optional)
+        force    = bool    // Force checkout, discarding local changes (optional)
+    }
+
+    probe {
+        repo_exists = _fs.exists(inputs.path + "/.git")
+        current_ref = _exec.cmd(["sh", "-c", "cd " + inputs.path + " && git rev-parse --abbrev-ref HEAD"]).stdout
+        is_correct = current_ref == inputs.ref
+    }
+
+    desired {
+        repo_exists = true
+        is_correct = true
+    }
+
+    body {
+        node "checkout" {
+            type = _exec
+            cmd  = ["git", "-C", inputs.path, "checkout",
+                (inputs.create ? "-b" : ""),
+                (inputs.force ? "-f" : ""),
+                inputs.ref]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// git.pull: Pull latest changes from remote.
+primitive "git.pull" {
+    inputs {
+        path    = string  // Repository path
+        remote  = string  // Remote name (default: origin)
+        branch  = string  // Branch to pull (optional)
+        rebase  = bool    // Use rebase instead of merge (optional)
+        force   = bool    // Force pull (optional)
+    }
+
+    prepare {
+        remote_val = inputs.remote != "" ? inputs.remote : "origin"
+    }
+
+    probe {
+        repo_exists = _fs.exists(inputs.path + "/.git")
+    }
+
+    desired {
+        repo_exists = true
+    }
+
+    body {
+        node "pull" {
+            type = _exec
+            cmd  = ["git", "-C", inputs.path, "pull",
+                (inputs.rebase ? "--rebase" : ""),
+                (inputs.force ? "--force" : ""),
+                prepare.remote_val,
+                (inputs.branch != "" ? inputs.branch : "")]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// git.fetch: Fetch changes from remote without merging.
+primitive "git.fetch" {
+    inputs {
+        path   = string  // Repository path
+        remote = string  // Remote name (default: origin)
+        tags   = bool    // Fetch all tags (optional)
+        prune  = bool    // Prune deleted remote branches (optional)
+    }
+
+    prepare {
+        remote_val = inputs.remote != "" ? inputs.remote : "origin"
+    }
+
+    probe {
+        repo_exists = _fs.exists(inputs.path + "/.git")
+    }
+
+    desired {
+        repo_exists = true
+    }
+
+    body {
+        node "fetch" {
+            type = _exec
+            cmd  = ["git", "-C", inputs.path, "fetch",
+                (inputs.tags ? "--tags" : ""),
+                (inputs.prune ? "--prune" : ""),
+                prepare.remote_val]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// git.ensure_repo: Ensure a repository exists and is at a specific ref.
+// Combines clone, fetch, and checkout in one primitive.
+primitive "git.ensure_repo" {
+    inputs {
+        url      = string  // Repository URL
+        path     = string  // Local path
+        ref      = string  // Branch, tag, or commit (optional, default: default branch)
+        depth    = int     // Clone depth (optional)
+        key_file = string  // SSH key path (optional)
+        update   = bool    // Pull/fetch updates (default: true)
+    }
+
+    prepare {
+        do_update = inputs.update || true
+    }
+
+    probe {
+        repo_exists = _fs.exists(inputs.path + "/.git")
+    }
+
+    desired {
+        repo_exists = true
+    }
+
+    body {
+        node "clone_if_missing" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "if [ ! -d '" + inputs.path + "/.git' ]; then " +
+                "  git clone " +
+                (inputs.depth > 0 ? "--depth " + string(inputs.depth) + " " : "") +
+                (inputs.key_file != "" ? " --config core.sshCommand='ssh -i " + inputs.key_file + "'" : "") +
+                "'" + inputs.url + "' '" + inputs.path + "' " +
+                "fi"]
+        }
+
+        node "fetch_updates" {
+            type = _exec
+            cmd  = prepare.do_update ?
+                ["git", "-C", inputs.path, "fetch", "--all"] :
+                ["true"]
+        }
+
+        node "checkout_ref" {
+            type = _exec
+            cmd  = inputs.ref != "" ?
+                ["git", "-C", inputs.path, "checkout", inputs.ref] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// git.config: Set Git configuration.
+primitive "git.config" {
+    inputs {
+        path  = string  // Repository path (optional, global if empty)
+        name  = string  // Configuration key
+        value = string  // Configuration value
+        scope = string  // Scope: local, global, system (default: local)
+    }
+
+    prepare {
+        scope_val = inputs.scope != "" ? inputs.scope : "local"
+    }
+
+    probe {
+        current_value = _exec.cmd(["git", "config",
+            (inputs.path != "" ? "--local" : "--global"),
+            "--get", inputs.name]).stdout
+        is_correct = current_value == inputs.value
+    }
+
+    desired {
+        is_correct = true
+    }
+
+    body {
+        node "set_config" {
+            type = _exec
+            cmd  = ["git", "-C", inputs.path, "config",
+                (prepare.scope_val == "global" ? "--global" : "--local"),
+                inputs.name, inputs.value]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// git.tag: Create or delete a tag.
+primitive "git.tag" {
+    inputs {
+        path    = string  // Repository path
+        name    = string  // Tag name
+        message = string  // Tag message (optional, creates annotated tag if set)
+        state   = string  // "present" or "absent" (default: present)
+    }
+
+    prepare {
+        state_val = inputs.state != "" ? inputs.state : "present"
+    }
+
+    probe {
+        tag_exists = _exec.cmd(["git", "-C", inputs.path, "tag", "-l", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        tag_exists = prepare.state_val == "present"
+    }
+
+    body {
+        node "create_tag" {
+            type = _exec
+            cmd  = prepare.state_val == "present" ?
+                ["git", "-C", inputs.path, "tag",
+                    (inputs.message != "" ? "-a" : ""),
+                    (inputs.message != "" ? "-m" : ""), (inputs.message != "" ? inputs.message : ""),
+                    inputs.name] :
+                ["git", "-C", inputs.path, "tag", "-d", inputs.name]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// git.branch: Create or delete a branch.
+primitive "git.branch" {
+    inputs {
+        path      = string  // Repository path
+        name      = string  // Branch name
+        base      = string  // Base branch/commit for new branch (optional)
+        state     = string  // "present" or "absent" (default: present)
+        checkout  = bool    // Checkout after creating (optional)
+    }
+
+    prepare {
+        state_val = inputs.state != "" ? inputs.state : "present"
+    }
+
+    probe {
+        branch_exists = _exec.cmd(["git", "-C", inputs.path, "branch", "--list", inputs.name]).exit_code == 0
+    }
+
+    desired {
+        branch_exists = prepare.state_val == "present"
+    }
+
+    body {
+        node "create_branch" {
+            type = _exec
+            cmd  = prepare.state_val == "present" ?
+                ["git", "-C", inputs.path, "branch",
+                    (inputs.base != "" ? inputs.base : ""),
+                    inputs.name] :
+                ["git", "-C", inputs.path, "branch", "-D", inputs.name]
+        }
+
+        node "checkout_branch" {
+            type = _exec
+            cmd  = (prepare.state_val == "present" && inputs.checkout) ?
+                ["git", "-C", inputs.path, "checkout", inputs.name] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// git.reset: Reset repository to a specific state.
+primitive "git.reset" {
+    inputs {
+        path  = string  // Repository path
+        ref   = string  // Commit/branch to reset to
+        mode  = string  // Reset mode: soft, mixed, hard (default: hard)
+    }
+
+    prepare {
+        mode_val = inputs.mode != "" ? inputs.mode : "hard"
+    }
+
+    body {
+        node "reset" {
+            type = _exec
+            cmd  = ["git", "-C", inputs.path, "reset", "--" + prepare.mode_val, inputs.ref]
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "local"
+    }
+}
+
+// git.archive: Create an archive from a Git repository.
+primitive "git.archive" {
+    inputs {
+        path   = string  // Repository path
+        dest   = string  // Destination archive file
+        ref    = string  // Tree/commit to archive (optional)
+        format = string  // Format: tar, zip (default: tar)
+        prefix = string  // Prefix for files in archive (optional)
+    }
+
+    prepare {
+        format_val = inputs.format != "" ? inputs.format : "tar"
+    }
+
+    body {
+        node "create_archive" {
+            type = _exec
+            cmd  = ["git", "-C", inputs.path, "archive",
+                "--format=" + prepare.format_val,
+                (inputs.prefix != "" ? "--prefix=" + inputs.prefix : ""),
+                (inputs.ref != "" ? inputs.ref : "HEAD"),
+                "-o", inputs.dest]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// git.submodule: Initialize and update submodules.
+primitive "git.submodule" {
+    inputs {
+        path   = string  // Repository path
+        init   = bool    // Initialize submodules (default: true)
+        update = bool    // Update submodules to latest (default: true)
+        recursive = bool // Update recursively (optional)
+    }
+
+    prepare {
+        do_init = inputs.init || true
+        do_update = inputs.update || true
+    }
+
+    probe {
+        has_submodules = _fs.exists(inputs.path + "/.gitmodules")
+    }
+
+    desired {
+        // Submodules should be initialized if they exist
+    }
+
+    body {
+        node "init_submodules" {
+            type = _exec
+            cmd  = prepare.do_init ?
+                ["git", "-C", inputs.path, "submodule", "init"] :
+                ["true"]
+        }
+
+        node "update_submodules" {
+            type = _exec
+            cmd  = prepare.do_update ?
+                ["git", "-C", inputs.path, "submodule", "update",
+                    (inputs.recursive ? "--recursive" : "")] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}

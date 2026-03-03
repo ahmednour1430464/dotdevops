@@ -1,0 +1,496 @@
+// Standard library: archive and advanced file primitives (v1.4+)
+// These primitives provide archive operations (tar/zip), file copying,
+// linking, and config file management.
+
+version = "v1.4"
+
+// archive.extract: Extract an archive file.
+// Supports tar.gz, tar.bz2, tar.xz, and zip formats.
+primitive "archive.extract" {
+    inputs {
+        src   = string  // Path to archive file
+        dest  = string  // Destination directory
+        owner = string  // Owner for extracted files (optional)
+        group = string  // Group for extracted files (optional)
+        mode  = string  // Mode for extracted files (optional)
+    }
+
+    probe {
+        exists = _fs.exists(inputs.dest)
+        is_dir = _fs.stat(inputs.dest).is_dir
+    }
+
+    desired {
+        exists = true
+        is_dir = true
+    }
+
+    body {
+        node "ensure_dest" {
+            type = _fs.mkdir
+            path = inputs.dest
+            mode = "0755"
+        }
+
+        node "extract_tar_gz" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "case '" + inputs.src + "' in " +
+                "*.tar.gz|*.tgz) tar xzf '" + inputs.src + "' -C '" + inputs.dest + "' ;; " +
+                "*.tar.bz2|*.tbz2) tar xjf '" + inputs.src + "' -C '" + inputs.dest + "' ;; " +
+                "*.tar.xz|*.txz) tar xJf '" + inputs.src + "' -C '" + inputs.dest + "' ;; " +
+                "*.zip) unzip -o '" + inputs.src + "' -d '" + inputs.dest + "' ;; " +
+                "*.tar) tar xf '" + inputs.src + "' -C '" + inputs.dest + "' ;; " +
+                "*) echo 'Unknown archive format'; exit 1 ;; " +
+                "esac"]
+        }
+
+        node "set_ownership" {
+            type = _exec
+            cmd  = (inputs.owner != "" && inputs.group != "") ?
+                ["chown", "-R", inputs.owner + ":" + inputs.group, inputs.dest] :
+                ["true"]
+        }
+
+        node "set_mode" {
+            type = _exec
+            cmd  = inputs.mode != "" ?
+                ["chmod", "-R", inputs.mode, inputs.dest] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// archive.create: Create an archive file.
+primitive "archive.create" {
+    inputs {
+        src     = string  // Source file or directory
+        dest    = string  // Destination archive path
+        format  = string  // Archive format (tar.gz, tar.bz2, zip, default: tar.gz)
+        exclude = list<string>  // Patterns to exclude (optional)
+    }
+
+    prepare {
+        format_val = inputs.format != "" ? inputs.format : "tar.gz"
+        exclude_args = join(map(inputs.exclude, fn(e) { "--exclude='" + e + "'" }), " ")
+    }
+
+    probe {
+        exists = _fs.exists(inputs.dest)
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "create_archive" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "case '" + prepare.format_val + "' in " +
+                "tar.gz) tar czf '" + inputs.dest + "' " + prepare.exclude_args + " -C '" + inputs.src + "' . ;; " +
+                "tar.bz2) tar cjf '" + inputs.dest + "' " + prepare.exclude_args + " -C '" + inputs.src + "' . ;; " +
+                "tar.xz) tar cJf '" + inputs.dest + "' " + prepare.exclude_args + " -C '" + inputs.src + "' . ;; " +
+                "zip) cd '" + inputs.src + "' && zip -r '" + inputs.dest + "' . " + prepare.exclude_args + " ;; " +
+                "tar) tar cf '" + inputs.dest + "' " + prepare.exclude_args + " -C '" + inputs.src + "' . ;; " +
+                "*) echo 'Unknown archive format'; exit 1 ;; " +
+                "esac"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.copy: Copy a file or directory.
+primitive "file.copy" {
+    inputs {
+        src   = string  // Source path
+        dest  = string  // Destination path
+        mode  = string  // File mode (optional)
+        owner = string  // Owner (optional)
+        group = string  // Group (optional)
+        force = bool    // Overwrite if exists (default: true)
+    }
+
+    probe {
+        src_exists = _fs.exists(inputs.src)
+        dest_exists = _fs.exists(inputs.dest)
+    }
+
+    desired {
+        src_exists = true
+    }
+
+    body {
+        node "copy_file" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "if [ -d '" + inputs.src + "' ]; then " +
+                "  cp -a" + (inputs.force ? "" : " -n") + " '" + inputs.src + "/.' '" + inputs.dest + "/' " +
+                "else " +
+                "  cp" + (inputs.force ? "" : " -n") + " '" + inputs.src + "' '" + inputs.dest + "' " +
+                "fi"]
+        }
+
+        node "set_mode" {
+            type = _exec
+            cmd  = inputs.mode != "" ?
+                ["chmod", inputs.mode, inputs.dest] :
+                ["true"]
+        }
+
+        node "set_owner" {
+            type = _exec
+            cmd  = (inputs.owner != "" && inputs.group != "") ?
+                ["chown", inputs.owner + ":" + inputs.group, inputs.dest] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.link: Create a symbolic link.
+primitive "file.link" {
+    inputs {
+        src   = string  // Target of the link
+        dest  = string  // Link path
+        force = bool    // Replace existing link (default: true)
+    }
+
+    probe {
+        link_exists = _fs.exists(inputs.dest)
+        link_target = _exec.cmd(["readlink", inputs.dest]).stdout
+        is_correct = link_target == inputs.src
+    }
+
+    desired {
+        link_exists = true
+        is_correct = true
+    }
+
+    body {
+        node "create_link" {
+            type = _exec
+            cmd  = ["ln", "-sf", inputs.src, inputs.dest]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.hardlink: Create a hard link.
+primitive "file.hardlink" {
+    inputs {
+        src   = string  // Target file
+        dest  = string  // Link path
+        force = bool    // Replace existing link (default: true)
+    }
+
+    probe {
+        src_exists = _fs.exists(inputs.src)
+        dest_exists = _fs.exists(inputs.dest)
+    }
+
+    desired {
+        src_exists = true
+        dest_exists = true
+    }
+
+    body {
+        node "create_hardlink" {
+            type = _exec
+            cmd  = ["ln", "-f", inputs.src, inputs.dest]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.line: Manage a line in a config file.
+// Similar to Ansible's lineinfile module.
+primitive "file.line" {
+    inputs {
+        path    = string  // File path
+        line    = string  // Line content
+        state   = string  // "present" or "absent" (default: present)
+        regexp  = string  // Regular expression to match (optional)
+        insert_after = string  // Insert after this line (optional)
+        insert_before = string  // Insert before this line (optional)
+        create  = bool    // Create file if not exists (default: false)
+    }
+
+    prepare {
+        state_val = inputs.state != "" ? inputs.state : "present"
+    }
+
+    probe {
+        file_exists = _fs.exists(inputs.path)
+        line_present = _exec.cmd(["sh", "-c", "grep -qxF '" + inputs.line + "' " + inputs.path + " 2>/dev/null"]).exit_code == 0
+    }
+
+    desired {
+        line_present = prepare.state_val == "present"
+    }
+
+    body {
+        node "create_file" {
+            type = _exec
+            cmd  = (!probe.file_exists && inputs.create) ?
+                ["touch", inputs.path] :
+                ["true"]
+        }
+
+        node "manage_line" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "if [ '" + prepare.state_val + "' = 'present' ]; then " +
+                "  if grep -qxF '" + inputs.line + "' " + inputs.path + " 2>/dev/null; then " +
+                "    exit 0 " +
+                "  elif [ -n '" + inputs.regexp + "' ]; then " +
+                "    sed -i 's|" + inputs.regexp + "|" + inputs.line + "|' " + inputs.path + " " +
+                "  elif [ -n '" + inputs.insert_after + "' ]; then " +
+                "    sed -i '/" + inputs.insert_after + "/a " + inputs.line + "' " + inputs.path + " " +
+                "  elif [ -n '" + inputs.insert_before + "' ]; then " +
+                "    sed -i '/" + inputs.insert_before + "/i " + inputs.line + "' " + inputs.path + " " +
+                "  else " +
+                "    echo '" + inputs.line + "' >> " + inputs.path + " " +
+                "  fi " +
+                "else " +
+                "  sed -i '/^" + inputs.line + "$/d' " + inputs.path + " " +
+                "fi"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.replace: Replace text using regex in a file.
+primitive "file.replace" {
+    inputs {
+        path   = string  // File path
+        regexp = string  // Regular expression pattern
+        replace = string  // Replacement text
+        backup = bool    // Create backup (default: true)
+    }
+
+    probe {
+        file_exists = _fs.exists(inputs.path)
+    }
+
+    desired {
+        file_exists = true
+    }
+
+    body {
+        node "replace_text" {
+            type = _exec
+            cmd  = ["sed", "-i" + (inputs.backup ? ".bak" : ""), "s|" + inputs.regexp + "|" + inputs.replace + "|g", inputs.path]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.block: Manage a block of text in a file.
+// Similar to Ansible's blockinfile module.
+primitive "file.block" {
+    inputs {
+        path   = string  // File path
+        block  = string  // Block content
+        marker = string  // Marker prefix (default: # MANAGED BY DEVOPSCTL)
+        state  = string  // "present" or "absent" (default: present)
+        create = bool    // Create file if not exists (default: false)
+    }
+
+    prepare {
+        state_val = inputs.state != "" ? inputs.state : "present"
+        marker_val = inputs.marker != "" ? inputs.marker : "# MANAGED BY DEVOPSCTL"
+        begin_marker = prepare.marker_val + " BEGIN"
+        end_marker = prepare.marker_val + " END"
+    }
+
+    probe {
+        file_exists = _fs.exists(inputs.path)
+        block_present = _exec.cmd(["sh", "-c", "grep -q '" + prepare.begin_marker + "' " + inputs.path + " 2>/dev/null"]).exit_code == 0
+    }
+
+    desired {
+        block_present = prepare.state_val == "present"
+    }
+
+    body {
+        node "create_file" {
+            type = _exec
+            cmd  = (!probe.file_exists && inputs.create) ?
+                ["touch", inputs.path] :
+                ["true"]
+        }
+
+        node "manage_block" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "if [ '" + prepare.state_val + "' = 'present' ]; then " +
+                "  if grep -q '" + prepare.begin_marker + "' " + inputs.path + " 2>/dev/null; then " +
+                "    sed -i '/" + prepare.begin_marker + "/,/" + prepare.end_marker + "/d' " + inputs.path + " " +
+                "  fi " +
+                "  echo '" + prepare.begin_marker + "' >> " + inputs.path + " " +
+                "  echo '" + inputs.block + "' >> " + inputs.path + " " +
+                "  echo '" + prepare.end_marker + "' >> " + inputs.path + " " +
+                "else " +
+                "  sed -i '/" + prepare.begin_marker + "/,/" + prepare.end_marker + "/d' " + inputs.path + " " +
+                "fi"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// file.download: Download a file to a specific path.
+// Combines net.fetch with file verification.
+primitive "file.download" {
+    inputs {
+        url     = string  // URL to download from
+        dest    = string  // Destination file path
+        mode    = string  // File mode (optional)
+        checksum = string  // Expected checksum (sha256:xxx, optional)
+        timeout = int     // Download timeout in seconds (default: 300)
+    }
+
+    prepare {
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 300
+    }
+
+    probe {
+        exists = _fs.exists(inputs.dest)
+        checksum_matches = inputs.checksum != "" ?
+            _exec.cmd(["sh", "-c", "echo '" + inputs.checksum + "' | cut -d: -f2 | xxd -r -p | sha256sum -c - 2>/dev/null"]).exit_code == 0 :
+            true
+    }
+
+    desired {
+        exists = true
+        checksum_matches = true
+    }
+
+    body {
+        node "download_file" {
+            type = _exec
+            cmd  = ["curl", "-fsSL", "-o", inputs.dest, "--connect-timeout", "30", "--max-time", string(prepare.timeout_val), inputs.url]
+        }
+
+        node "verify_checksum" {
+            type = _exec
+            cmd  = inputs.checksum != "" ?
+                ["sh", "-c", "echo '" + inputs.checksum + "' | cut -d: -f2 | xxd -r -p | sha256sum -c -"] :
+                ["true"]
+        }
+
+        node "set_mode" {
+            type = _exec
+            cmd  = inputs.mode != "" ?
+                ["chmod", inputs.mode, inputs.dest] :
+                ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// dir.sync: Synchronize two directories.
+primitive "dir.sync" {
+    inputs {
+        src     = string  // Source directory
+        dest    = string  // Destination directory
+        delete  = bool    // Delete files in dest not in src (default: false)
+        exclude = list<string>  // Patterns to exclude (optional)
+    }
+
+    probe {
+        src_exists = _fs.exists(inputs.src)
+    }
+
+    desired {
+        src_exists = true
+    }
+
+    body {
+        node "ensure_dest" {
+            type = _fs.mkdir
+            path = inputs.dest
+            mode = "0755"
+        }
+
+        node "sync_dirs" {
+            type = _exec
+            cmd  = ["rsync", "-a",
+                (inputs.delete ? "--delete" : ""),
+                join(map(inputs.exclude, fn(e) { "--exclude=" + e }), " "),
+                inputs.src + "/",
+                inputs.dest + "/"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// dir.clean: Remove old files from a directory.
+primitive "dir.clean" {
+    inputs {
+        path    = string  // Directory path
+        pattern = string  // File pattern to match (optional)
+        age     = string  // Minimum age (e.g., "7d", "30d", optional)
+        count   = int     // Keep N most recent files (optional)
+    }
+
+    body {
+        node "clean_dir" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "cd '" + inputs.path + "' && " +
+                (inputs.age != "" ? 
+                    "find . -name '" + (inputs.pattern != "" ? inputs.pattern : "*") + "' -mtime +" + inputs.age + " -delete " :
+                    "") +
+                (inputs.count > 0 ?
+                    "ls -t " + (inputs.pattern != "" ? inputs.pattern : "*") + " 2>/dev/null | tail -n +" + string(inputs.count + 1) + " | xargs -r rm -f " :
+                    "")]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}

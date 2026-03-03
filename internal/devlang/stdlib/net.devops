@@ -1,0 +1,347 @@
+// Standard library: network primitives (v1.4+)
+// These primitives provide network operations including downloads,
+// health checks, and waiting for services to become available.
+
+version = "v1.4"
+
+// net.fetch: Download a file from a URL.
+// Supports HTTP/HTTPS with optional headers.
+primitive "net.fetch" {
+    inputs {
+        url     = string  // URL to download from
+        dest    = string  // Destination file path
+        mode    = string  // File mode (optional, e.g., "0644")
+        headers = map<string, string>  // HTTP headers (optional)
+        timeout = int     // Timeout in seconds (optional, default: 30)
+    }
+
+    prepare {
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 30
+    }
+
+    probe {
+        exists = _fs.exists(inputs.dest)
+    }
+
+    desired {
+        exists = true
+    }
+
+    body {
+        node "fetch_file" {
+            type    = _net.fetch
+            url     = inputs.url
+            method  = "GET"
+            headers = inputs.headers
+        }
+
+        node "write_file" {
+            type    = _fs.write
+            path    = inputs.dest
+            content = node.fetch_file.body
+            mode    = inputs.mode
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// net.wait_for_port: Wait for a TCP port to become available.
+// Useful for waiting for services to start.
+primitive "net.wait_for_port" {
+    inputs {
+        host    = string  // Host to connect to (default: localhost)
+        port    = int     // Port number
+        timeout = int     // Maximum wait time in seconds (default: 60)
+        delay   = int     // Delay between checks in seconds (default: 2)
+    }
+
+    prepare {
+        host_val    = inputs.host != "" ? inputs.host : "localhost"
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 60
+        delay_val   = inputs.delay > 0 ? inputs.delay : 2
+    }
+
+    body {
+        node "wait_for_port" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "timeout " + string(prepare.timeout_val) + " sh -c '" +
+                "while ! nc -z " + prepare.host_val + " " + string(inputs.port) + " 2>/dev/null; do " +
+                "sleep " + string(prepare.delay_val) + "; " +
+                "done'"]
+            timeout = prepare.timeout_val + 5
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// net.wait_for_http: Wait for an HTTP endpoint to return expected status.
+// Useful for health checks and API availability.
+primitive "net.wait_for_http" {
+    inputs {
+        url           = string  // URL to check
+        expected_code = int     // Expected HTTP status code (default: 200)
+        timeout       = int     // Maximum wait time in seconds (default: 60)
+        delay         = int     // Delay between checks in seconds (default: 2)
+        headers       = map<string, string>  // HTTP headers (optional)
+    }
+
+    prepare {
+        code_val    = inputs.expected_code > 0 ? inputs.expected_code : 200
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 60
+        delay_val   = inputs.delay > 0 ? inputs.delay : 2
+    }
+
+    body {
+        node "wait_for_http" {
+            type = _exec
+            cmd  = ["sh", "-c", "" +
+                "timeout " + string(prepare.timeout_val) + " sh -c '" +
+                "while true; do " +
+                "code=$(curl -s -o /dev/null -w '%{http_code}' " +
+                (inputs.headers != {} ? "-H '" + join(map(inputs.headers, fn(k, v) { k + ": " + v }), "' -H '") + "' " : "") +
+                inputs.url + " 2>/dev/null); " +
+                "if [ \"$code\" = \"" + string(prepare.code_val) + "\" ]; then exit 0; fi; " +
+                "sleep " + string(prepare.delay_val) + "; " +
+                "done'"]
+            timeout = prepare.timeout_val + 5
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// net.wait_for_tcp: Wait for TCP connection (alias for wait_for_port).
+primitive "net.wait_for_tcp" {
+    inputs {
+        host    = string  // Host to connect to
+        port    = int     // Port number
+        timeout = int     // Maximum wait time in seconds
+    }
+
+    body {
+        node "wait" {
+            type = _exec
+            cmd  = ["sh", "-c", "timeout " + string(inputs.timeout) + " sh -c 'while ! nc -z " + inputs.host + " " + string(inputs.port) + " 2>/dev/null; do sleep 2; done'"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// net.http_get: Perform an HTTP GET request.
+primitive "net.http_get" {
+    inputs {
+        url     = string  // URL to request
+        headers = map<string, string>  // HTTP headers (optional)
+        timeout = int     // Timeout in seconds (default: 30)
+    }
+
+    prepare {
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 30
+    }
+
+    body {
+        node "http_get" {
+            type    = _net.fetch
+            url     = inputs.url
+            method  = "GET"
+            headers = inputs.headers
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "remote"
+    }
+}
+
+// net.http_post: Perform an HTTP POST request.
+primitive "net.http_post" {
+    inputs {
+        url     = string  // URL to request
+        body    = string  // Request body
+        headers = map<string, string>  // HTTP headers (optional)
+        timeout = int     // Timeout in seconds (default: 30)
+    }
+
+    prepare {
+        timeout_val = inputs.timeout > 0 ? inputs.timeout : 30
+    }
+
+    body {
+        node "http_post" {
+            type    = _net.fetch
+            url     = inputs.url
+            method  = "POST"
+            headers = inputs.headers
+        }
+    }
+
+    contract {
+        idempotent   = false
+        side_effects = "remote"
+    }
+}
+
+// net.dns_lookup: Perform a DNS lookup.
+primitive "net.dns_lookup" {
+    inputs {
+        name = string  // Hostname to resolve
+        type = string  // Record type (A, AAAA, MX, etc., default: A)
+    }
+
+    prepare {
+        type_val = inputs.type != "" ? inputs.type : "A"
+    }
+
+    body {
+        node "dns_lookup" {
+            type = _exec
+            cmd  = ["sh", "-c", "dig +short " + inputs.name + " " + prepare.type_val + " | head -1"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// net.dns_ensure: Ensure a DNS record resolves to expected value.
+primitive "net.dns_ensure" {
+    inputs {
+        name    = string  // Hostname to check
+        value   = string  // Expected IP or value
+        type    = string  // Record type (default: A)
+    }
+
+    prepare {
+        type_val = inputs.type != "" ? inputs.type : "A"
+    }
+
+    probe {
+        resolved = _exec.cmd(["sh", "-c", "dig +short " + inputs.name + " " + prepare.type_val + " | head -1"]).stdout
+        matches = resolved == inputs.value
+    }
+
+    desired {
+        matches = true
+    }
+
+    body {
+        // DNS records are managed externally; this primitive is for verification
+        node "verify_dns" {
+            type = _exec
+            cmd  = ["sh", "-c", "dig +short " + inputs.name + " " + prepare.type_val + " | grep -q '" + inputs.value + "'"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "local"
+    }
+}
+
+// net.firewall_open: Open a port in firewall (ufw/firewalld).
+primitive "net.firewall_open" {
+    inputs {
+        port    = int     // Port number
+        proto   = string  // Protocol (tcp/udp, default: tcp)
+        manager = string  // Firewall manager (ufw/firewalld, auto-detect if not specified)
+    }
+
+    prepare {
+        proto_val  = inputs.proto != "" ? inputs.proto : "tcp"
+        use_ufw    = inputs.manager == "ufw" || (inputs.manager == "" && _fs.exists("/usr/sbin/ufw"))
+        use_firewalld = inputs.manager == "firewalld" || (inputs.manager == "" && _fs.exists("/usr/bin/firewall-cmd"))
+    }
+
+    probe {
+        port_open = prepare.use_ufw ?
+            _exec.cmd(["sh", "-c", "ufw status | grep -q '" + string(inputs.port) + "/" + prepare.proto_val + "'"]) :
+            _exec.cmd(["sh", "-c", "firewall-cmd --list-ports | grep -q '" + string(inputs.port) + "/" + prepare.proto_val + "'"])
+        is_open = port_open.exit_code == 0
+    }
+
+    desired {
+        is_open = true
+    }
+
+    body {
+        node "open_port" {
+            type = _exec
+            cmd  = prepare.use_ufw ?
+                ["ufw", "allow", string(inputs.port) + "/" + prepare.proto_val] :
+                ["firewall-cmd", "--permanent", "--add-port=" + string(inputs.port) + "/" + prepare.proto_val]
+        }
+
+        node "reload_firewall" {
+            type = _exec
+            cmd  = prepare.use_firewalld ? ["firewall-cmd", "--reload"] : ["true"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
+
+// net.firewall_close: Close a port in firewall.
+primitive "net.firewall_close" {
+    inputs {
+        port    = int     // Port number
+        proto   = string  // Protocol (tcp/udp, default: tcp)
+        manager = string  // Firewall manager (ufw/firewalld, auto-detect if not specified)
+    }
+
+    prepare {
+        proto_val  = inputs.proto != "" ? inputs.proto : "tcp"
+        use_ufw    = inputs.manager == "ufw" || (inputs.manager == "" && _fs.exists("/usr/sbin/ufw"))
+    }
+
+    probe {
+        port_open = prepare.use_ufw ?
+            _exec.cmd(["sh", "-c", "ufw status | grep -q '" + string(inputs.port) + "/" + prepare.proto_val + "'"]) :
+            _exec.cmd(["sh", "-c", "firewall-cmd --list-ports | grep -q '" + string(inputs.port) + "/" + prepare.proto_val + "'"])
+        is_open = port_open.exit_code == 0
+    }
+
+    desired {
+        is_open = false
+    }
+
+    body {
+        node "close_port" {
+            type = _exec
+            cmd  = prepare.use_ufw ?
+                ["ufw", "delete", "allow", string(inputs.port) + "/" + prepare.proto_val] :
+                ["firewall-cmd", "--permanent", "--remove-port=" + string(inputs.port) + "/" + prepare.proto_val]
+        }
+
+        node "reload_firewall" {
+            type = _exec
+            cmd  = ["firewall-cmd", "--reload"]
+        }
+    }
+
+    contract {
+        idempotent   = true
+        side_effects = "remote"
+    }
+}
