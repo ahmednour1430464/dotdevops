@@ -197,10 +197,23 @@ func handleRequest(req Request, w *bufio.Writer) {
 func runDiagnostics(uri, text string, w *bufio.Writer) {
 	path := strings.TrimPrefix(uri, "file://")
 
-	res, _ := devlang.CompileFileAutoDetect(path, []byte(text), "v0.8")
+	res, compileErr := devlang.CompileFileAutoDetect(path, []byte(text), "v0.8")
 
 	diagnostics := []Diagnostic{}
-	for _, err := range res.Errors {
+	if res == nil && compileErr != nil {
+		// Internal compiler failure (e.g. stdlib load error) — surface as a single diagnostic.
+		diagnostics = append(diagnostics, Diagnostic{
+			Range:    Range{Start: Position{}, End: Position{Character: 5}},
+			Severity: 1,
+			Source:   "devopsctl",
+			Message:  compileErr.Error(),
+		})
+	}
+	var errs []error
+	if res != nil {
+		errs = res.Errors
+	}
+	for _, err := range errs {
 		line := 0
 		col := 0
 		msg := err.Error()
