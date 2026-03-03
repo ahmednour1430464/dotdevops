@@ -315,8 +315,9 @@ func send(v any, w *bufio.Writer) {
 }
 
 // getDefinition finds the definition location for the symbol at the given position.
-// Currently supports:
+// Supports:
 // - Import paths: navigates to the imported file
+// - Aliased import references: e.g., lib.web1 → target "web1" in imported file
 func getDefinition(uri string, text string, line, character int) *Location {
 	path := strings.TrimPrefix(uri, "file://")
 
@@ -330,32 +331,219 @@ func getDefinition(uri string, text string, line, character int) *Location {
 	targetLine := line + 1
 	targetCol := character + 1
 
-	// Look for an import declaration at the given position
+	// First, check if cursor is on an import path string
 	for _, decl := range file.Decls {
 		if imp, ok := decl.(*devlang.ImportDecl); ok {
-			// Check if the cursor is within the import path string
-			// The import path string appears after 'import' keyword
-			// We need to check if the position falls within the string literal
 			if isPositionInImportPath(imp, targetLine, targetCol, text) {
-				// Resolve the import path
-				resolver := devlang.NewImportResolver(filepath.Dir(path))
-				resolvedPath, err := resolver.ResolvePath(imp.Path, path)
-				if err != nil {
-					return nil
-				}
-
-				// Return the location of the imported file (start of file)
-				return &Location{
-					URI: "file://" + resolvedPath,
-					Range: Range{
-						Start: Position{Line: 0, Character: 0},
-						End:   Position{Line: 0, Character: 0},
-					},
-				}
+				return resolveImportPath(imp, path)
 			}
 		}
 	}
 
+	// Second, check if cursor is on an identifier with dot notation (aliased import reference)
+	// e.g., lib.web1 or lib.deploy_app
+	if loc := resolveAliasedReference(file, text, targetLine, targetCol, path); loc != nil {
+		return loc
+	}
+
+	return nil
+}
+
+// resolveImportPath returns the location of an imported file.
+func resolveImportPath(imp *devlang.ImportDecl, fromPath string) *Location {
+	resolver := devlang.NewImportResolver(filepath.Dir(fromPath))
+	resolvedPath, err := resolver.ResolvePath(imp.Path, fromPath)
+	if err != nil {
+		return nil
+	}
+
+	return &Location{
+		URI: "file://" + resolvedPath,
+		Range: Range{
+			Start: Position{Line: 0, Character: 0},
+			End:   Position{Line: 0, Character: 0},
+		},
+	}
+}
+
+// resolveAliasedReference finds the definition for an identifier accessed via aliased import.
+// e.g., for "lib.web1" it finds target "web1" in the file imported with alias "lib".
+func resolveAliasedReference(file *devlang.File, text string, targetLine, targetCol int, fromPath string) *Location {
+	// Find the identifier at the cursor position
+	ident := findIdentifierAtPosition(text, targetLine, targetCol)
+	if ident == "" {
+		return nil
+	}
+
+	// Check if it's a dotted identifier (e.g., "lib.web1")
+	if !strings.Contains(ident, ".") {
+		return nil
+	}
+
+	parts := strings.SplitN(ident, ".", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	alias := parts[0]
+	memberName := parts[1]
+
+	// Find the import declaration with this alias
+	var targetImport *devlang.ImportDecl
+	for _, decl := range file.Decls {
+		if imp, ok := decl.(*devlang.ImportDecl); ok {
+			if imp.Alias == alias {
+				targetImport = imp
+				break
+			}
+		}
+	}
+
+	if targetImport == nil {
+		return nil
+	}
+
+	// Resolve the imported file path
+	resolver := devlang.NewImportResolver(filepath.Dir(fromPath))
+	resolvedPath, err := resolver.ResolvePath(targetImport.Path, fromPath)
+	if err != nil {
+		return nil
+	}
+
+	// Read and parse the imported file
+	importedSrc, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return nil
+	}
+	importedFile, errs := devlang.ParseFile(resolvedPath, importedSrc)
+	if len(errs) > 0 || importedFile == nil {
+		return nil
+	}
+
+	// Find the definition with the given name
+	for _, decl := range importedFile.Decls {
+		if pos := getDeclarationPosition(decl, memberName); pos != nil {
+			return &Location{
+				URI: "file://" + resolvedPath,
+				Range: Range{
+					Start: Position{Line: pos.Line - 1, Character: pos.Col - 1}, // Convert to 0-based
+					End:   Position{Line: pos.Line - 1, Character: pos.Col - 1 + len(memberName)},
+				},
+			}
+		}
+	}
+
+	return nil
+}
+
+// findIdentifierAtPosition returns the identifier at the given position.
+func findIdentifierAtPosition(text string, targetLine, targetCol int) string {
+	lines := strings.Split(text, "\n")
+	if targetLine <= 0 || targetLine > len(lines) {
+		return ""
+	}
+
+	line := lines[targetLine-1]
+	if len(line) == 0 {
+		return ""
+	}
+
+	// Convert 1-based column to 0-based index
+	// Clamp to valid range
+	cursorIdx := targetCol - 1
+	if cursorIdx < 0 {
+		cursorIdx = 0
+	}
+	if cursorIdx >= len(line) {
+		cursorIdx = len(line) - 1
+	}
+
+	// Check if cursor is on an identifier character
+	if !isIdentChar(rune(line[cursorIdx])) {
+		// Cursor is not on an identifier, try to find nearby
+		// Scan left for start of identifier
+		found := false
+		for i := cursorIdx; i >= 0; i-- {
+			if isIdentChar(rune(line[i])) {
+				cursorIdx = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Scan right for identifier
+			for i := cursorIdx; i < len(line); i++ {
+				if isIdentChar(rune(line[i])) {
+					cursorIdx = i
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return ""
+		}
+	}
+
+	// Scan backwards to find the start of the identifier
+	start := cursorIdx
+	for start > 0 && isIdentChar(rune(line[start-1])) {
+		start--
+	}
+
+	// Scan forwards to find the end of the identifier
+	end := cursorIdx
+	for end < len(line) && isIdentChar(rune(line[end])) {
+		end++
+	}
+
+	if start >= end {
+		return ""
+	}
+
+	return line[start:end]
+}
+
+// isIdentChar returns true if the character can be part of an identifier.
+func isIdentChar(ch rune) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.'
+}
+
+// getDeclarationPosition returns the position of a named declaration.
+func getDeclarationPosition(decl devlang.Decl, name string) *devlang.Position {
+	switch d := decl.(type) {
+	case *devlang.TargetDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.FleetDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.NodeDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.StepDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.PrimitiveDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.FnDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.LetDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	case *devlang.ModuleDecl:
+		if d.Name == name {
+			return &d.PosInfo
+		}
+	}
 	return nil
 }
 
