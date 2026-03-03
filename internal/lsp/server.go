@@ -146,14 +146,14 @@ func handleRequest(req Request, w *bufio.Writer) {
 
 		// Read from in-memory cache; fall back to disk only if not cached.
 		text := documentCache[params.TextDocument.URI]
+		filePath := strings.TrimPrefix(params.TextDocument.URI, "file://")
 		if text == "" {
-			path := strings.TrimPrefix(params.TextDocument.URI, "file://")
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := os.ReadFile(filePath); err == nil {
 				text = string(data)
 			}
 		}
 
-		items := GetCompletions(text, params.Position.Line, params.Position.Character)
+		items := GetCompletionsWithFile(text, params.Position.Line, params.Position.Character, filePath)
 
 		resp := Response{
 			JSONRPC: "2.0",
